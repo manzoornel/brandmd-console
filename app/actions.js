@@ -9,21 +9,19 @@ async function me() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Not signed in");
   const { data: profile } = await supabase
-    .from("profiles").select("id, role, client_id").eq("id", user.id).single();
-  return { supabase, user, profile };
+    .from("profiles").select("id, roles, client_id").eq("id", user.id).single();
+  return { supabase, user, profile: { ...profile, roles: profile?.roles || [] } };
 }
-const isAdmin = (r) => r === "super_admin" || r === "admin";
+const has = (roles, r) => Array.isArray(roles) && roles.includes(r);
+const admin_ = (roles) => has(roles, "super_admin") || has(roles, "admin");
 
 /* ---------------- Attendance ---------------- */
 export async function clockIn() {
   const { supabase, user } = await me();
   const { data: open } = await supabase
     .from("attendance").select("id").eq("user_id", user.id).is("clock_out", null).limit(1);
-  if (!open || open.length === 0) {
-    await supabase.from("attendance").insert({ user_id: user.id });
-  }
+  if (!open || open.length === 0) await supabase.from("attendance").insert({ user_id: user.id });
 }
-
 export async function clockOut(auto = false) {
   const { supabase, user } = await me();
   const { data: open } = await supabase
@@ -31,10 +29,8 @@ export async function clockOut(auto = false) {
     .order("clock_in", { ascending: false }).limit(1);
   if (open && open.length) {
     await supabase.from("attendance")
-      .update({ clock_out: new Date().toISOString(), auto_out: auto })
-      .eq("id", open[0].id);
+      .update({ clock_out: new Date().toISOString(), auto_out: auto }).eq("id", open[0].id);
   }
-  // also stop any running task timers
   const { data: running } = await supabase
     .from("task_time_logs").select("id, started_at").eq("user_id", user.id).is("ended_at", null);
   for (const r of running || []) {
@@ -44,15 +40,16 @@ export async function clockOut(auto = false) {
   }
 }
 
-/* ---------------- Users (admin) ---------------- */
+/* ---------------- Users + passwords (admin) ---------------- */
 export async function createUser(form) {
   const { profile } = await me();
-  if (!isAdmin(profile.role)) throw new Error("Not allowed");
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
   const email = form.get("email");
   const password = form.get("password");
   const full_name = form.get("full_name");
-  const role = form.get("role");
+  const roles = form.getAll("roles");
   const client_id = form.get("client_id") || null;
+  if (!roles.length) throw new Error("Pick at least one role");
 
   const admin = createAdminClient();
   const { data, error } = await admin.auth.admin.createUser({
@@ -60,43 +57,60 @@ export async function createUser(form) {
   });
   if (error) throw new Error(error.message);
   await admin.from("profiles").insert({
-    id: data.user.id, full_name, role,
-    client_id: role === "client" ? client_id : null,
+    id: data.user.id, full_name, roles,
+    client_id: roles.includes("client") ? client_id : null,
   });
   revalidatePath("/users");
 }
 
 export async function setUserActive(id, active) {
   const { profile } = await me();
-  if (!isAdmin(profile.role)) throw new Error("Not allowed");
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
   await createAdminClient().from("profiles").update({ active }).eq("id", id);
   revalidatePath("/users");
+}
+
+export async function adminResetPassword(userId, newPassword) {
+  const { profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  if (!newPassword || newPassword.length < 6) throw new Error("Password must be at least 6 characters");
+  const { error } = await createAdminClient().auth.admin.updateUserById(userId, { password: newPassword });
+  if (error) throw new Error(error.message);
+  return { ok: true };
 }
 
 /* ---------------- Clients / doctors ---------------- */
 export async function addClient(form) {
   const { supabase, profile } = await me();
-  if (!isAdmin(profile.role)) throw new Error("Not allowed");
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  const name = (form.get("name") || "").trim();
+  if (!name) throw new Error("Name is required");
+  const { data: existing } = await supabase.from("clients").select("id").ilike("name", name);
+  if (existing && existing.length) {
+    throw new Error(`A doctor named "${name}" already exists. Make it unique, e.g. "${name} (2)".`);
+  }
   await supabase.from("clients").insert({
-    name: form.get("name"),
+    name,
     type: form.get("type") || "external",
     package: form.get("package") || "",
-    youtube_channel: form.get("youtube_channel") || "",
-    ig_account: form.get("ig_account") || "",
-    fb_page: form.get("fb_page") || "",
+    quota_videos: Number(form.get("quota_videos")) || 0,
+    quota_posters: Number(form.get("quota_posters")) || 0,
+    self_approver: form.get("self_approver") === "on",
   });
-  revalidatePath("/doctors");
-  revalidatePath("/dashboard");
+  revalidatePath("/doctors"); revalidatePath("/dashboard");
 }
 
-/* ---------------- Video workflow ---------------- */
+/* ---------------- Workflow ---------------- */
 export async function addVideo(form) {
   const { supabase, profile } = await me();
-  if (!["super_admin", "admin", "editor"].includes(profile.role)) throw new Error("Not allowed");
+  if (!["super_admin", "admin", "editor", "designer"].some((r) => has(profile.roles, r)))
+    throw new Error("Not allowed");
   await supabase.from("videos").insert({
     title: form.get("title"),
     client_id: form.get("client_id") || null,
     editor_id: form.get("editor_id") || null,
+    item_type: form.get("item_type") || "video",
+    brief: form.get("brief") || "",
     stage: "to_edit",
   });
   revalidatePath("/dashboard");
@@ -113,7 +127,9 @@ export async function submitDrive(videoId, link) {
 
 export async function approveVideo(videoId) {
   const { supabase, profile } = await me();
-  if (!isAdmin(profile.role)) throw new Error("Not allowed");
+  const { data: v } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  const isClientApprover = has(profile.roles, "client") && profile.client_id && v?.client_id === profile.client_id;
+  if (!admin_(profile.roles) && !isClientApprover) throw new Error("Not allowed to approve");
   await supabase.from("videos").update({
     stage: "content", approver_id: profile.id,
     approved_at: new Date().toISOString(), rejection_note: "",
@@ -123,7 +139,9 @@ export async function approveVideo(videoId) {
 
 export async function rejectVideo(videoId, note) {
   const { supabase, profile } = await me();
-  if (!isAdmin(profile.role)) throw new Error("Not allowed");
+  const { data: v } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  const isClientApprover = has(profile.roles, "client") && profile.client_id && v?.client_id === profile.client_id;
+  if (!admin_(profile.roles) && !isClientApprover) throw new Error("Not allowed");
   await supabase.from("videos").update({
     stage: "to_edit", rejection_note: note || "Needs changes", submitted_at: null,
   }).eq("id", videoId);
@@ -142,12 +160,16 @@ export async function savePost(videoId, fields) {
 
 export async function markPosted(videoId, fields) {
   const { supabase, profile } = await me();
+  const missing = [];
+  if (!fields.youtube || !fields.youtube.trim()) missing.push("YouTube");
+  if (!fields.instagram || !fields.instagram.trim()) missing.push("Instagram");
+  if (!fields.facebook || !fields.facebook.trim()) missing.push("Facebook");
+  if (missing.length) throw new Error(`Please paste the ${missing.join(", ")} link before publishing.`);
   await supabase.from("videos").update({
     caption: fields.caption, hashtags: fields.hashtags, pinned_comment: fields.pinned,
     youtube_url: fields.youtube, instagram_url: fields.instagram, facebook_url: fields.facebook,
     writer_id: profile.id, stage: "published", posted_at: new Date().toISOString(),
   }).eq("id", videoId);
-  // stop the task timer for this video/user
   await stopTask(videoId);
   revalidatePath("/dashboard");
 }
@@ -166,11 +188,9 @@ export async function startTask(videoId, stage) {
   const { supabase, user } = await me();
   const { data: open } = await supabase.from("task_time_logs")
     .select("id").eq("user_id", user.id).eq("video_id", videoId).is("ended_at", null).limit(1);
-  if (!open || !open.length) {
+  if (!open || !open.length)
     await supabase.from("task_time_logs").insert({ video_id: videoId, user_id: user.id, stage });
-  }
 }
-
 export async function stopTask(videoId) {
   const { supabase, user } = await me();
   const { data: open } = await supabase.from("task_time_logs")

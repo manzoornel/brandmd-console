@@ -7,7 +7,7 @@ export default async function AnalyticsPage() {
   const profile = await getProfile();
   const supabase = createClient();
   let q = supabase.from("videos").select("*").eq("stage", "published");
-  if (profile.role === "client" && profile.client_id) q = q.eq("client_id", profile.client_id);
+  if ((profile.roles || []).includes("client") && profile.client_id) q = q.eq("client_id", profile.client_id);
   const [{ data: vids }, { data: clients }] = await Promise.all([
     q.order("posted_at", { ascending: false }),
     supabase.from("clients").select("id, name"),

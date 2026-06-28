@@ -4,7 +4,7 @@ import Link from "next/link";
 import Logo from "./Logo";
 import { isAdmin } from "@/lib/roles";
 
-export default function Sidebar({ role }) {
+export default function Sidebar({ roles }) {
   const path = usePathname();
   const items = [
     { href: "/dashboard", label: "Pipeline", icon: "▦" },
@@ -12,20 +12,17 @@ export default function Sidebar({ role }) {
     { href: "/doctors", label: "Doctors", icon: "✚" },
     { href: "/analytics", label: "Analytics", icon: "◎" },
     { href: "/users", label: "Users", icon: "⚇", admin: true },
+    { href: "/account", label: "My account", icon: "⚙" },
   ];
   return (
     <aside className="side">
       <div className="brand">
         <Logo size={40} />
-        <div>
-          <div className="bname">Brand MD</div>
-          <div className="bsub">Solutions</div>
-        </div>
+        <div><div className="bname">Brand MD</div><div className="bsub">Solutions</div></div>
       </div>
       <nav className="nav">
-        {items.filter((i) => !i.admin || isAdmin(role)).map((i) => (
-          <Link key={i.href} href={i.href}
-            className={"nav-item" + (path === i.href ? " active" : "")}>
+        {items.filter((i) => !i.admin || isAdmin(roles)).map((i) => (
+          <Link key={i.href} href={i.href} className={"nav-item" + (path === i.href ? " active" : "")}>
             <i>{i.icon}</i> <span>{i.label}</span>
           </Link>
         ))}

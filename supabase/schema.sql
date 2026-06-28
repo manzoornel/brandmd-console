@@ -15,6 +15,9 @@ create table if not exists clients (
   youtube_channel text default '',
   ig_account text default '',
   fb_page text default '',
+  quota_videos int not null default 0,
+  quota_posters int not null default 0,
+  self_approver boolean not null default false,
   created_at timestamptz not null default now()
 );
 
@@ -24,6 +27,7 @@ create table if not exists profiles (
   full_name text not null default '',
   role text not null default 'editor'
     check (role in ('super_admin','admin','editor','writer','client')),
+  roles text[] not null default '{}',
   client_id uuid references clients(id) on delete set null, -- only for role='client'
   active boolean not null default true,
   created_at timestamptz not null default now()
@@ -33,6 +37,8 @@ create table if not exists profiles (
 create table if not exists videos (
   id uuid primary key default gen_random_uuid(),
   title text not null,
+  item_type text not null default 'video' check (item_type in ('video','poster')),
+  brief text default '',
   client_id uuid references clients(id) on delete set null,
   editor_id uuid references profiles(id) on delete set null,
   writer_id uuid references profiles(id) on delete set null,
@@ -140,3 +146,26 @@ create index if not exists idx_videos_stage   on videos(stage);
 create index if not exists idx_videos_client  on videos(client_id);
 create index if not exists idx_att_user_date  on attendance(user_id, work_date);
 create index if not exists idx_ttl_video      on task_time_logs(video_id);
+
+-- ---------- v2: roles[] helpers + client self-approval ----------
+create or replace function my_roles()
+returns text[] language sql stable security definer set search_path = public as $$
+  select roles from profiles where id = auth.uid()
+$$;
+create or replace function has_role(r text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select r = any(coalesce(my_roles(), '{}'))
+$$;
+-- redefine is_admin / is_staff to use roles[]
+create or replace function is_admin()
+returns boolean language sql stable security definer set search_path = public as $$
+  select has_role('super_admin') or has_role('admin')
+$$;
+create or replace function is_staff()
+returns boolean language sql stable security definer set search_path = public as $$
+  select has_role('super_admin') or has_role('admin')
+      or has_role('editor') or has_role('writer') or has_role('designer')
+$$;
+drop policy if exists "client approve own vids" on videos;
+create policy "client approve own vids" on videos for update
+  using (client_id = auth_client_id()) with check (client_id = auth_client_id());

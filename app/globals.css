@@ -128,3 +128,6 @@ label.lbl{display:block;font-size:12.5px;font-weight:650;color:#475569;margin:14
   .nav-item{justify-content:center;padding:11px}
   .brand{justify-content:center}
 }
+
+/* v2 additions */
+.brief{font-size:12px;color:#475569;background:#F4F6FA;border:1px solid var(--border);border-radius:8px;padding:7px 9px;margin-bottom:10px;line-height:1.4}
