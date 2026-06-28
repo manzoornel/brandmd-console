@@ -95,8 +95,36 @@ export async function addClient(form) {
     package: form.get("package") || "",
     quota_videos: Number(form.get("quota_videos")) || 0,
     quota_posters: Number(form.get("quota_posters")) || 0,
+    price: Number(form.get("price")) || 0,
     self_approver: form.get("self_approver") === "on",
   });
+  revalidatePath("/doctors"); revalidatePath("/dashboard");
+}
+
+export async function editClient(form) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  const id = form.get("id");
+  const name = (form.get("name") || "").trim();
+  if (!id || !name) throw new Error("Name is required");
+  const { data: dup } = await supabase.from("clients").select("id").ilike("name", name).neq("id", id);
+  if (dup && dup.length) throw new Error(`Another doctor named "${name}" already exists.`);
+  await supabase.from("clients").update({
+    name,
+    type: form.get("type") || "external",
+    package: form.get("package") || "",
+    quota_videos: Number(form.get("quota_videos")) || 0,
+    quota_posters: Number(form.get("quota_posters")) || 0,
+    price: Number(form.get("price")) || 0,
+    self_approver: form.get("self_approver") === "on",
+  }).eq("id", id);
+  revalidatePath("/doctors"); revalidatePath("/dashboard");
+}
+
+export async function deleteClient(id) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  await supabase.from("clients").delete().eq("id", id);
   revalidatePath("/doctors"); revalidatePath("/dashboard");
 }
 
@@ -111,6 +139,7 @@ export async function addVideo(form) {
     editor_id: form.get("editor_id") || null,
     item_type: form.get("item_type") || "video",
     brief: form.get("brief") || "",
+    due_date: form.get("due_date") || null,
     stage: "to_edit",
   });
   revalidatePath("/dashboard");

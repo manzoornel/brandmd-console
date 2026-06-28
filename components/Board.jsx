@@ -3,18 +3,37 @@
 import { useMemo, useState, useEffect } from "react";
 import { STAGES, STAGE_INDEX, stageMeta, ITEM_TYPES } from "@/lib/stages";
 import { isAdmin, hasRole } from "@/lib/roles";
-import { fmt } from "@/lib/format";
+import { fmt, dueInfo, shortDate } from "@/lib/format";
 import {
   addVideo, submitDrive, approveVideo, rejectVideo,
   savePost, markPosted, updateViews, startTask, refreshYouTubeViews,
 } from "@/app/actions";
 import { youTubeEmbed } from "@/lib/youtube";
 
+const DUE_COLORS = {
+  over:  { bg: "#FDECEC", fg: "#B42318" },
+  today: { bg: "#FEF3C7", fg: "#B45309" },
+  soon:  { bg: "#FEF3C7", fg: "#92600A" },
+  ok:    { bg: "#EEF1F5", fg: "#64748B" },
+};
+function DueBadge({ due, small }) {
+  const info = dueInfo(due);
+  if (!info) return null;
+  const c = DUE_COLORS[info.level];
+  return (
+    <span style={{ background: c.bg, color: c.fg, fontSize: small ? 10 : 11, fontWeight: 700,
+      padding: small ? "1px 7px" : "2px 8px", borderRadius: 20, whiteSpace: "nowrap" }}>
+      {info.text}
+    </span>
+  );
+}
+
 export default function Board({ roles, myClientId, videos, clients, people }) {
   const [filter, setFilter] = useState("all");
   const [modal, setModal] = useState(null);
+  const [open, setOpen] = useState({}); // user toggles for doctor groups
   const nameOf = (id) => people.find((p) => p.id === id)?.full_name || "—";
-  const clientOf = (id) => clients.find((c) => c.id === id)?.name || "—";
+  const clientOf = (id) => clients.find((c) => c.id === id)?.name || "— No doctor —";
 
   const shown = useMemo(
     () => (filter === "all" ? videos : videos.filter((v) => v.client_id === filter)),
@@ -22,12 +41,15 @@ export default function Board({ roles, myClientId, videos, clients, people }) {
   );
   const canCreate = isAdmin(roles) || hasRole(roles, "editor") || hasRole(roles, "designer");
 
+  const toggle = (key, count) =>
+    setOpen((o) => ({ ...o, [key]: !(o[key] ?? count <= 3) }));
+
   return (
     <div className="body">
       <div className="head">
         <div>
           <h1>Content pipeline</h1>
-          <p className="sub">Every video and poster from start to live, in one signal.</p>
+          <p className="sub">Grouped by doctor. Click a doctor to open their items.</p>
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <select className="input" style={{ width: "auto" }} value={filter} onChange={(e) => setFilter(e.target.value)}>
@@ -41,6 +63,10 @@ export default function Board({ roles, myClientId, videos, clients, people }) {
       <div className="kanban">
         {STAGES.map((st) => {
           const items = shown.filter((v) => v.stage === st.key);
+          // group by client
+          const groups = {};
+          items.forEach((v) => { (groups[v.client_id] || (groups[v.client_id] = [])).push(v); });
+          const groupList = Object.entries(groups).sort((a, b) => b[1].length - a[1].length);
           return (
             <section className="col" key={st.key}>
               <div className="col-top">
@@ -50,11 +76,30 @@ export default function Board({ roles, myClientId, videos, clients, people }) {
               </div>
               <div className="col-body">
                 {items.length === 0 && <div className="emptyc">Nothing here</div>}
-                {items.map((v) => (
-                  <Card key={v.id} v={v} roles={roles} myClientId={myClientId}
-                    editorName={nameOf(v.editor_id)} clientName={clientOf(v.client_id)}
-                    onAction={(type) => setModal({ type, video: v })} />
-                ))}
+                {groupList.map(([cid, arr]) => {
+                  const key = st.key + ":" + cid;
+                  const expanded = open[key] ?? arr.length <= 3;
+                  const overdue = arr.filter((v) => dueInfo(v.due_date)?.level === "over").length;
+                  return (
+                    <div key={cid} className="dgroup">
+                      <button className="dgroup-head" onClick={() => toggle(key, arr.length)}>
+                        <span className="dgroup-caret">{expanded ? "▾" : "▸"}</span>
+                        <span className="dgroup-name">{clientOf(cid)}</span>
+                        {overdue > 0 && <span className="dgroup-over">⚠ {overdue}</span>}
+                        <span className="dgroup-count">{arr.length}</span>
+                      </button>
+                      {expanded && (
+                        <div className="dgroup-body">
+                          {arr.map((v) => (
+                            <Card key={v.id} v={v} roles={roles} myClientId={myClientId}
+                              editorName={nameOf(v.editor_id)}
+                              onAction={(type) => setModal({ type, video: v })} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </section>
           );
@@ -74,13 +119,11 @@ function TypeBadge({ type }) {
   const poster = type === "poster";
   return (
     <span className="tag" style={{ background: poster ? "rgba(244,161,43,.14)" : "rgba(91,71,251,.12)",
-      color: poster ? "#B45309" : "#4938D6", fontSize: 10 }}>
-      {poster ? "POSTER" : "VIDEO"}
-    </span>
+      color: poster ? "#B45309" : "#4938D6", fontSize: 10 }}>{poster ? "POSTER" : "VIDEO"}</span>
   );
 }
 
-function Card({ v, roles, myClientId, editorName, clientName, onAction }) {
+function Card({ v, roles, myClientId, editorName, onAction }) {
   const sm = stageMeta(v.stage);
   const idx = STAGE_INDEX[v.stage];
   const total = (v.yt_views || 0) + (v.ig_views || 0) + (v.fb_views || 0);
@@ -88,10 +131,10 @@ function Card({ v, roles, myClientId, editorName, clientName, onAction }) {
   return (
     <article className="card" style={{ borderLeft: `3px solid ${sm.color}` }}>
       <div className="card-top">
-        <span className="client">{clientName}</span>
+        <TypeBadge type={v.item_type} />
         {v.stage === "published" && total > 0
           ? <span className="views"><span className="pulse" />{fmt(total)} views</span>
-          : <TypeBadge type={v.item_type} />}
+          : <DueBadge due={v.due_date} small />}
       </div>
       <div className="card-title">{v.title}</div>
       {v.stage === "to_edit" && v.brief && <div className="brief">📋 {v.brief}</div>}
@@ -103,7 +146,10 @@ function Card({ v, roles, myClientId, editorName, clientName, onAction }) {
       </div>
       <div className="card-meta">
         <span>✎ {editorName}</span>
-        {v.drive_link && <a className="link" href={v.drive_link} target="_blank" rel="noreferrer">File ↗</a>}
+        <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {v.due_date && <span style={{ color: "#94A3B8" }}>📅 {shortDate(v.due_date)}</span>}
+          {v.drive_link && <a className="link" href={v.drive_link} target="_blank" rel="noreferrer">File ↗</a>}
+        </span>
       </div>
       {v.stage === "to_edit" && v.rejection_note && <div className="rej">↩ Sent back: {v.rejection_note}</div>}
       {act ? (
@@ -153,6 +199,7 @@ function PanelHead({ v, label }) {
     <div style={{ marginBottom: 14 }}>
       <div className="eyebrow">{label} · {ITEM_TYPES[v.item_type] || "Video"}</div>
       <h2 className="mtitle" style={{ marginBottom: 0 }}>{v.title}</h2>
+      {v.due_date && <div style={{ marginTop: 6 }}><DueBadge due={v.due_date} /></div>}
     </div>
   );
 }
@@ -164,27 +211,37 @@ function NewItem({ clients, people, close }) {
   const [clientId, setClientId] = useState(clients[0]?.id || "");
   const [editorId, setEditorId] = useState(creators[0]?.id || "");
   const [brief, setBrief] = useState("");
+  const [due, setDue] = useState("");
   const [busy, setBusy] = useState(false);
   async function save() {
     if (!title.trim()) return;
     setBusy(true);
     const fd = new FormData();
     fd.set("title", title.trim()); fd.set("item_type", type);
-    fd.set("client_id", clientId); fd.set("editor_id", editorId); fd.set("brief", brief);
+    fd.set("client_id", clientId); fd.set("editor_id", editorId);
+    fd.set("brief", brief); fd.set("due_date", due);
     await addVideo(fd); close();
   }
   return (
     <div>
       <div className="eyebrow">New item</div>
       <h2 className="mtitle">Add to the pipeline</h2>
-      <label className="lbl">Type</label>
-      <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
-        <option value="video">Video</option><option value="poster">Poster / Image</option>
-      </select>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 150 }}>
+          <label className="lbl">Type</label>
+          <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
+            <option value="video">Video</option><option value="poster">Poster / Image</option>
+          </select>
+        </div>
+        <div style={{ flex: 1, minWidth: 150 }}>
+          <label className="lbl">Due date</label>
+          <input className="input" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+        </div>
+      </div>
       <label className="lbl">Title</label>
       <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. 3 foods that spike sugar" />
       <label className="lbl">Brief — what needs to be done</label>
-      <textarea className="textarea" value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Notes for the editor/designer: hook, length, key points…" />
+      <textarea className="textarea" value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Notes for the editor/designer…" />
       <label className="lbl">Doctor / client</label>
       <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)}>
         {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -231,7 +288,7 @@ function Review({ v, close }) {
       <PanelHead v={v} label="Review" />
       {v.drive_link && <a className="drivebox" href={v.drive_link} target="_blank" rel="noreferrer">▶ Open the file ↗</a>}
       <label className="lbl">If sending back, say what to fix</label>
-      <textarea className="textarea" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Trim the intro, fix subtitle timing…" />
+      <textarea className="textarea" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Trim the intro…" />
       <div className="mbtns">
         <button className="btn btn-danger" disabled={busy} onClick={back}>Send back</button>
         <button className="cta" disabled={busy} onClick={ok}>Approve →</button>
@@ -259,8 +316,7 @@ function PostContent({ v, close }) {
     if (!f.facebook.trim()) missing.push("Facebook");
     if (missing.length) { setErr(`Please paste the ${missing.join(", ")} link before publishing.`); return; }
     setErr(""); setBusy(true);
-    try { await markPosted(v.id, f); close(); }
-    catch (e) { setErr(e.message); setBusy(false); }
+    try { await markPosted(v.id, f); close(); } catch (e) { setErr(e.message); setBusy(false); }
   }
   return (
     <div style={{ maxHeight: "78vh", overflowY: "auto" }}>
@@ -270,7 +326,7 @@ function PostContent({ v, close }) {
       <label className="lbl">Caption / content</label>
       <textarea className="textarea" value={f.caption} onChange={set("caption")} placeholder="Write the post caption…" />
       <label className="lbl">Hashtags</label>
-      <input className="input" value={f.hashtags} onChange={set("hashtags")} placeholder="#diabetes #doctoruncle #malayalam" />
+      <input className="input" value={f.hashtags} onChange={set("hashtags")} placeholder="#diabetes #doctoruncle" />
       <label className="lbl">Pinned comment</label>
       <input className="input" value={f.pinned} onChange={set("pinned")} placeholder="e.g. Book an appointment — link in bio" />
       <p className="hint" style={{ marginTop: 14, fontWeight: 600, color: "#1A1730" }}>All three links are required to publish:</p>
@@ -310,7 +366,6 @@ function Views({ v, close }) {
   return (
     <div>
       <PanelHead v={v} label="Performance" />
-      <p className="hint">Type counts in, or pull YouTube automatically once the API key is set.</p>
       <label className="lbl">YouTube views {v.youtube_url && <button onClick={auto} style={linkBtn}>↻ auto-pull</button>}</label>
       <input className="input" type="number" value={yt} onChange={(e) => setYt(e.target.value)} />
       <label className="lbl">Instagram views</label>

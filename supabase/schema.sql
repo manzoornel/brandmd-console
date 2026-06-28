@@ -18,6 +18,7 @@ create table if not exists clients (
   quota_videos int not null default 0,
   quota_posters int not null default 0,
   self_approver boolean not null default false,
+  price numeric not null default 0,
   created_at timestamptz not null default now()
 );
 
@@ -39,6 +40,7 @@ create table if not exists videos (
   title text not null,
   item_type text not null default 'video' check (item_type in ('video','poster')),
   brief text default '',
+  due_date date,
   client_id uuid references clients(id) on delete set null,
   editor_id uuid references profiles(id) on delete set null,
   writer_id uuid references profiles(id) on delete set null,

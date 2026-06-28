@@ -37,6 +37,10 @@ export default function AddClientForm() {
           <label className="lbl">Posters / month</label>
           <input className="input" name="quota_posters" type="number" min="0" defaultValue="0" />
         </div>
+        <div style={{ flex: 1, minWidth: 150 }}>
+          <label className="lbl">Package price (₹)</label>
+          <input className="input" name="price" type="number" min="0" defaultValue="0" />
+        </div>
       </div>
       <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 13.5, color: "#475569" }}>
         <input type="checkbox" name="self_approver" /> This doctor approves their own content
