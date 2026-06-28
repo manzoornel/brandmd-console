@@ -241,3 +241,41 @@ export async function refreshYouTubeViews(videoId, url) {
   revalidatePath("/dashboard"); revalidatePath("/analytics");
   return { ok: true, views };
 }
+
+/* ---------------- v3 Round 2: edit user, payments, follow-up ---------------- */
+export async function updateUser(form) {
+  const { profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  const id = form.get("id");
+  const full_name = form.get("full_name");
+  const roles = form.getAll("roles");
+  const client_id = form.get("client_id") || null;
+  if (!id) throw new Error("Missing user");
+  if (!roles.length) throw new Error("Pick at least one role");
+  await createAdminClient().from("profiles").update({
+    full_name, roles, client_id: roles.includes("client") ? client_id : null,
+  }).eq("id", id);
+  revalidatePath("/users");
+}
+
+export async function recordPayment(form) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  const client_id = form.get("client_id");
+  const amount = Number(form.get("amount"));
+  if (!client_id || !amount) throw new Error("Enter an amount");
+  await supabase.from("payments").insert({
+    client_id, amount, note: form.get("note") || "", created_by: profile.id,
+  });
+  revalidatePath("/accounts");
+}
+
+export async function setFollowUp(form) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  await supabase.from("clients").update({
+    follow_up_date: form.get("follow_up_date") || null,
+    follow_up_note: form.get("follow_up_note") || "",
+  }).eq("id", form.get("client_id"));
+  revalidatePath("/accounts");
+}

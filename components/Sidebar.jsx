@@ -11,6 +11,7 @@ export default function Sidebar({ roles }) {
     { href: "/team", label: "Team", icon: "◷", admin: true },
     { href: "/doctors", label: "Doctors", icon: "✚" },
     { href: "/analytics", label: "Analytics", icon: "◎" },
+    { href: "/accounts", label: "Accounts", icon: "₹", admin: true },
     { href: "/users", label: "Users", icon: "⚇", admin: true },
     { href: "/account", label: "My account", icon: "⚙" },
   ];

@@ -4,6 +4,7 @@ import { isAdmin, rolesLabel } from "@/lib/roles";
 import CreateUserForm from "@/components/CreateUserForm";
 import UserActiveToggle from "@/components/UserActiveToggle";
 import ResetPasswordButton from "@/components/ResetPasswordButton";
+import EditUserForm from "@/components/EditUserForm";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,7 @@ export default async function UsersPage() {
                 <td style={{ textAlign: "right" }}>
                   {!roles.includes("super_admin") && (
                     <div style={{ display: "inline-flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <EditUserForm user={{ id: p.id, full_name: p.full_name, roles, client_id: p.client_id }} clients={clients} />
                       <ResetPasswordButton id={p.id} name={p.full_name} />
                       <UserActiveToggle id={p.id} active={p.active} />
                     </div>
