@@ -14,6 +14,7 @@ export default async function DashboardPage() {
   return (
     <Board
       roles={profile.roles}
+      myId={profile.id}
       myClientId={profile.client_id}
       videos={videos || []}
       clients={clients || []}

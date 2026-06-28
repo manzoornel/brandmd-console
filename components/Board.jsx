@@ -5,7 +5,7 @@ import { STAGES, STAGE_INDEX, stageMeta, ITEM_TYPES } from "@/lib/stages";
 import { isAdmin, hasRole } from "@/lib/roles";
 import { fmt, dueInfo, shortDate } from "@/lib/format";
 import {
-  addVideo, submitDrive, approveVideo, rejectVideo,
+  addVideo, editVideo, submitDrive, approveVideo, rejectVideo,
   savePost, markPosted, updateViews, startTask, refreshYouTubeViews,
 } from "@/app/actions";
 import { youTubeEmbed } from "@/lib/youtube";
@@ -28,7 +28,7 @@ function DueBadge({ due, small }) {
   );
 }
 
-export default function Board({ roles, myClientId, videos, clients, people }) {
+export default function Board({ roles, myId, myClientId, videos, clients, people }) {
   const [filter, setFilter] = useState("all");
   const [modal, setModal] = useState(null);
   const [open, setOpen] = useState({}); // user toggles for doctor groups
@@ -91,7 +91,7 @@ export default function Board({ roles, myClientId, videos, clients, people }) {
                       {expanded && (
                         <div className="dgroup-body">
                           {arr.map((v) => (
-                            <Card key={v.id} v={v} roles={roles} myClientId={myClientId}
+                            <Card key={v.id} v={v} roles={roles} myId={myId} myClientId={myClientId}
                               editorName={nameOf(v.editor_id)}
                               onAction={(type) => setModal({ type, video: v })} />
                           ))}
@@ -123,18 +123,24 @@ function TypeBadge({ type }) {
   );
 }
 
-function Card({ v, roles, myClientId, editorName, onAction }) {
+function Card({ v, roles, myId, myClientId, editorName, onAction }) {
   const sm = stageMeta(v.stage);
   const idx = STAGE_INDEX[v.stage];
   const total = (v.yt_views || 0) + (v.ig_views || 0) + (v.fb_views || 0);
-  const act = cardAction(v, roles, myClientId);
+  const act = cardAction(v, roles, myId, myClientId);
+  const canEdit = isAdmin(roles) || v.editor_id === myId;
+  const locked = v.stage === "to_edit" && v.editor_id && v.editor_id !== myId
+    && !isAdmin(roles) && (hasRole(roles, "editor") || hasRole(roles, "designer"));
   return (
     <article className="card" style={{ borderLeft: `3px solid ${sm.color}` }}>
       <div className="card-top">
         <TypeBadge type={v.item_type} />
-        {v.stage === "published" && total > 0
-          ? <span className="views"><span className="pulse" />{fmt(total)} views</span>
-          : <DueBadge due={v.due_date} small />}
+        <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {v.stage === "published" && total > 0
+            ? <span className="views"><span className="pulse" />{fmt(total)} views</span>
+            : <DueBadge due={v.due_date} small />}
+          {canEdit && <button className="editpen" title="Edit details" onClick={() => onAction("edit")}>✎</button>}
+        </span>
       </div>
       <div className="card-title">{v.title}</div>
       {v.stage === "to_edit" && v.brief && <div className="brief">📋 {v.brief}</div>}
@@ -154,6 +160,8 @@ function Card({ v, roles, myClientId, editorName, onAction }) {
       {v.stage === "to_edit" && v.rejection_note && <div className="rej">↩ Sent back: {v.rejection_note}</div>}
       {act ? (
         <button className="card-btn" style={{ background: sm.color }} onClick={() => onAction(act.type)}>{act.label}</button>
+      ) : locked ? (
+        <div className="waiting">🔒 Assigned to {editorName}</div>
       ) : v.stage !== "published" ? (
         <div className="waiting">Waiting on {sm.owner}</div>
       ) : null}
@@ -161,9 +169,11 @@ function Card({ v, roles, myClientId, editorName, onAction }) {
   );
 }
 
-function cardAction(v, roles, myClientId) {
+function cardAction(v, roles, myId, myClientId) {
   const adminOrClient = isAdmin(roles) || (hasRole(roles, "client") && v.client_id === myClientId);
-  if (v.stage === "to_edit" && (hasRole(roles, "editor") || hasRole(roles, "designer") || isAdmin(roles)))
+  const canCreatorAct = (hasRole(roles, "editor") || hasRole(roles, "designer")) &&
+    (isAdmin(roles) || !v.editor_id || v.editor_id === myId);
+  if (v.stage === "to_edit" && canCreatorAct)
     return { type: "submit", label: v.item_type === "poster" ? "Add file & submit" : "Add Drive link & submit" };
   if (v.stage === "review" && adminOrClient) return { type: "review", label: "Review" };
   if (v.stage === "content" && (hasRole(roles, "writer") || isAdmin(roles))) return { type: "post", label: "Write content & post" };
@@ -186,6 +196,7 @@ function Modal({ children, onClose }) {
 function ActionPanel({ modal, roles, clients, people, close }) {
   const { type, video } = modal;
   if (type === "new") return <NewItem clients={clients} people={people} close={close} />;
+  if (type === "edit") return <EditItem v={video} clients={clients} people={people} close={close} />;
   if (type === "submit") return <SubmitDrive v={video} close={close} />;
   if (type === "review") return <Review v={video} close={close} />;
   if (type === "post") return <PostContent v={video} close={close} />;
@@ -254,6 +265,62 @@ function NewItem({ clients, people, close }) {
       <div className="mbtns">
         <button className="btn btn-ghost" onClick={close}>Cancel</button>
         <button className="cta" disabled={busy} onClick={save}>{busy ? "Adding…" : "Add to pipeline"}</button>
+      </div>
+    </div>
+  );
+}
+
+function EditItem({ v, clients, people, close }) {
+  const creators = people.filter((p) => (p.roles || []).some((r) => ["editor", "designer"].includes(r)));
+  const [f, setF] = useState({
+    title: v.title || "", item_type: v.item_type || "video",
+    due_date: v.due_date || "", brief: v.brief || "",
+    client_id: v.client_id || "", editor_id: v.editor_id || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  async function save() {
+    if (!f.title.trim()) return;
+    setBusy(true); setErr("");
+    const fd = new FormData();
+    fd.set("id", v.id);
+    Object.entries(f).forEach(([k, val]) => fd.set(k, val));
+    try { await editVideo(fd); close(); } catch (e) { setErr(e.message); setBusy(false); }
+  }
+  return (
+    <div>
+      <div className="eyebrow">Edit item</div>
+      <h2 className="mtitle">Edit details</h2>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 150 }}>
+          <label className="lbl">Type</label>
+          <select className="input" value={f.item_type} onChange={set("item_type")}>
+            <option value="video">Video</option><option value="poster">Poster / Image</option>
+          </select>
+        </div>
+        <div style={{ flex: 1, minWidth: 150 }}>
+          <label className="lbl">Due date</label>
+          <input className="input" type="date" value={f.due_date} onChange={set("due_date")} />
+        </div>
+      </div>
+      <label className="lbl">Title</label>
+      <input className="input" value={f.title} onChange={set("title")} />
+      <label className="lbl">Brief</label>
+      <textarea className="textarea" value={f.brief} onChange={set("brief")} />
+      <label className="lbl">Doctor / client</label>
+      <select className="input" value={f.client_id} onChange={set("client_id")}>
+        {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+      </select>
+      <label className="lbl">Assigned to (reassign / forward)</label>
+      <select className="input" value={f.editor_id} onChange={set("editor_id")}>
+        <option value="">— Unassigned —</option>
+        {creators.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+      </select>
+      {err && <p className="hint" style={{ color: "#B42318" }}>{err}</p>}
+      <div className="mbtns">
+        <button className="btn btn-ghost" onClick={close}>Cancel</button>
+        <button className="cta" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save changes"}</button>
       </div>
     </div>
   );

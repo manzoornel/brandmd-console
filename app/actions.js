@@ -265,7 +265,8 @@ export async function recordPayment(form) {
   const amount = Number(form.get("amount"));
   if (!client_id || !amount) throw new Error("Enter an amount");
   await supabase.from("payments").insert({
-    client_id, amount, note: form.get("note") || "", created_by: profile.id,
+    client_id, amount, note: form.get("note") || "", method: form.get("method") || "",
+    created_by: profile.id,
   });
   revalidatePath("/accounts");
 }
@@ -278,4 +279,22 @@ export async function setFollowUp(form) {
     follow_up_note: form.get("follow_up_note") || "",
   }).eq("id", form.get("client_id"));
   revalidatePath("/accounts");
+}
+
+/* ---------------- v3 Round 3A: edit pipeline item (with assignment lock) ---------------- */
+export async function editVideo(form) {
+  const { supabase, profile } = await me();
+  const id = form.get("id");
+  const { data: v } = await supabase.from("videos").select("editor_id").eq("id", id).single();
+  const allowed = admin_(profile.roles) || (v && v.editor_id === profile.id);
+  if (!allowed) throw new Error("Only the assigned person or an admin can edit this item.");
+  await supabase.from("videos").update({
+    title: form.get("title"),
+    item_type: form.get("item_type") || "video",
+    due_date: form.get("due_date") || null,
+    brief: form.get("brief") || "",
+    client_id: form.get("client_id") || null,
+    editor_id: form.get("editor_id") || null,
+  }).eq("id", id);
+  revalidatePath("/dashboard");
 }

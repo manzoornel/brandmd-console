@@ -180,6 +180,7 @@ create table if not exists payments (
   client_id uuid references clients(id) on delete cascade,
   amount numeric not null default 0,
   note text default '',
+  method text default '',
   paid_at timestamptz not null default now(),
   created_by uuid references profiles(id) on delete set null
 );

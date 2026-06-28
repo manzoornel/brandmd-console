@@ -43,7 +43,7 @@ export default async function DoctorsPage() {
                 {c.self_approver && <span className="tag" style={{ background: "rgba(244,161,43,.14)", color: "#B45309" }}>Self-approves</span>}
               </div>
               <div className="cname">{c.name}</div>
-              <div className="cpkg">{c.package || "—"}{c.price > 0 ? ` · ₹${Number(c.price).toLocaleString("en-IN")}` : ""}</div>
+              <div className="cpkg">{c.package || "—"}{admin && c.price > 0 ? ` · ₹${Number(c.price).toLocaleString("en-IN")}` : ""}</div>
               {(c.quota_videos > 0 || c.quota_posters > 0) && (
                 <div className="cpkg" style={{ color: "#475569" }}>
                   This month: {s.usedV}/{c.quota_videos} videos · {s.usedP}/{c.quota_posters} posters

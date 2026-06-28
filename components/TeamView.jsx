@@ -34,8 +34,10 @@ export default function TeamView({ people, attendance, logs, videos }) {
       const submitted = videos.filter((v) => v.editor_id === p.id && inRange(v.submitted_at)).length;
       const published = videos.filter((v) => v.writer_id === p.id && inRange(v.posted_at)).length;
       const score = published * 3 + submitted * 2 + hours;
+      const daysPresent = new Set(att.map((a) => a.work_date)).size;
+      const delta = daysPresent ? hours - 7.5 * daysPresent : 0; // standard 9:30–5:00 = 7.5h/day
       return { p, firstIn: att[0]?.clock_in, lastOut: att.some((a) => !a.clock_out) && isToday ? null : att[att.length - 1]?.clock_out,
-        hours, active, submitted, published, score };
+        hours, active, submitted, published, score, delta, daysPresent };
     });
   }, [people, attendance, logs, videos, start, end]);
 
@@ -54,6 +56,7 @@ export default function TeamView({ people, attendance, logs, videos }) {
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 14, marginBottom: 6 }}>
         <Btn k="today" label="Today" /><Btn k="week" label="This week" /><Btn k="custom" label="Custom day" />
         {range === "custom" && <input className="input" style={{ width: "auto" }} type="date" value={customDay} onChange={(e) => setCustomDay(e.target.value)} />}
+        <span style={{ fontSize: 11.5, color: "#94A3B8", marginLeft: "auto" }}>Standard 9:30–5:00 = 7.5h/day · OT = overtime</span>
       </div>
 
       <table className="tbl" style={{ marginTop: 12 }}>
@@ -70,7 +73,14 @@ export default function TeamView({ people, attendance, logs, videos }) {
                 <td style={{ fontSize: 12.5, color: "#475569" }}>{rolesLabel(r.p.roles)}</td>
                 <td>{fmtTime(r.firstIn)}</td>
                 <td>{r.lastOut ? fmtTime(r.lastOut) : (r.firstIn ? <span style={{ color: "#0F9B68", fontWeight: 600 }}>Active</span> : "—")}</td>
-                <td style={{ fontWeight: 700 }}>{r.hours.toFixed(1)} h</td>
+                <td style={{ fontWeight: 700 }}>
+                  {r.hours.toFixed(1)} h
+                  {r.daysPresent > 0 && Math.abs(r.delta) >= 0.25 && (
+                    <span className={"ot " + (r.delta > 0 ? "ot-over" : "ot-under")} style={{ marginLeft: 6 }}>
+                      {r.delta > 0 ? `+${r.delta.toFixed(1)} OT` : `${r.delta.toFixed(1)}`}
+                    </span>
+                  )}
+                </td>
                 <td>{hms(r.active)}</td>
                 <td>{r.submitted}</td>
                 <td>{r.published}</td>

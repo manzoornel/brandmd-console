@@ -31,8 +31,18 @@ export default function AccountActions({ client }) {
             <h2 className="mtitle">{client.name}</h2>
             <label className="lbl">Amount received (₹)</label>
             <input className="input" name="amount" type="number" min="1" required placeholder="e.g. 10000" />
-            <label className="lbl">Note (optional)</label>
-            <input className="input" name="note" placeholder="e.g. Advance via UPI" />
+            <label className="lbl">Method</label>
+            <select className="input" name="method">
+              <option value="">— Select —</option>
+              <option value="UPI">UPI</option>
+              <option value="QR">QR code</option>
+              <option value="Bank transfer">Bank transfer</option>
+              <option value="Cash">Cash</option>
+              <option value="Cheque">Cheque</option>
+              <option value="Other">Other</option>
+            </select>
+            <label className="lbl">Note / reference (optional)</label>
+            <input className="input" name="note" placeholder="e.g. UPI ref 4471, advance" />
             {err && <p className="hint" style={{ color: "#B42318" }}>{err}</p>}
             <div className="mbtns">
               <button type="button" className="btn btn-ghost" onClick={() => setMode(null)}>Cancel</button>
