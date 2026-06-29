@@ -8,7 +8,7 @@ export default async function DashboardPage() {
   const supabase = createClient();
   const [{ data: videos }, { data: clients }, { data: people }] = await Promise.all([
     supabase.from("videos").select("*").order("created_at", { ascending: false }),
-    supabase.from("clients").select("id, name, type"),
+    supabase.from("clients").select("id, name, type, parent_id"),
     supabase.from("profiles").select("id, full_name, roles"),
   ]);
   return (

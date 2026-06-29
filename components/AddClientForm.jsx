@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { addClient } from "@/app/actions";
 
-export default function AddClientForm({ packages = [] }) {
+export default function AddClientForm({ packages = [], firms = [] }) {
   const [open, setOpen] = useState(false);
   const [pkgId, setPkgId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -55,6 +55,20 @@ export default function AddClientForm({ packages = [] }) {
           </div>
         </>
       )}
+      <div style={{ background: "#F7F8FC", border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", marginTop: 14 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: "#475569" }}>
+          <input type="checkbox" name="is_firm" /> This is a <b>firm / hospital</b> (groups several doctors under it)
+        </label>
+        {firms.length > 0 && (
+          <>
+            <label className="lbl" style={{ marginTop: 12 }}>Belongs to a firm / hospital (optional)</label>
+            <select className="input" name="parent_id" defaultValue="">
+              <option value="">— Standalone (no firm) —</option>
+              {firms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </>
+        )}
+      </div>
       <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 13.5, color: "#475569" }}>
         <input type="checkbox" name="self_approver" /> This doctor approves their own content
       </label>

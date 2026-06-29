@@ -7,7 +7,11 @@ export default async function AnalyticsPage() {
   const profile = await getProfile();
   const supabase = createClient();
   let q = supabase.from("videos").select("id, title, client_id, yt_views, ig_views, fb_views").eq("stage", "published");
-  if ((profile.roles || []).includes("client") && profile.client_id) q = q.eq("client_id", profile.client_id);
+  if ((profile.roles || []).includes("client") && profile.client_id) {
+    const { data: kids } = await supabase.from("clients").select("id").eq("parent_id", profile.client_id);
+    const ids = [profile.client_id, ...((kids || []).map((k) => k.id))];
+    q = q.in("client_id", ids);
+  }
   const [{ data: vids }, { data: clients }] = await Promise.all([
     q.order("posted_at", { ascending: false }),
     supabase.from("clients").select("id, name"),

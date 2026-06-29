@@ -25,11 +25,13 @@ export default async function DoctorsPage() {
       usedV: tm.filter((v) => v.item_type === "video").length,
       usedP: tm.filter((v) => v.item_type === "poster").length };
   };
+  const firms = (clients || []).filter((c) => c.is_firm);
+  const firmName = (id) => (clients || []).find((c) => c.id === id)?.name;
   return (
     <div className="body">
       <div className="head">
         <div><h1>Doctors & packages</h1><p className="sub">In-house brands plus external doctors you produce for.</p></div>
-        {admin && <AddClientForm packages={packages || []} />}
+        {admin && <AddClientForm packages={packages || []} firms={firms} />}
       </div>
       <div className="clientgrid">
         {(clients || []).map((c) => {
@@ -38,12 +40,15 @@ export default async function DoctorsPage() {
           return (
             <div className="clientcard" key={c.id}>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <span className="tag" style={{ background: internal ? "rgba(24,181,122,.12)" : "rgba(91,71,251,.12)", color: internal ? "#0F9B68" : "#4938D6" }}>
-                  {internal ? "In-house" : "Client"}
-                </span>
+                {c.is_firm
+                  ? <span className="tag" style={{ background: "rgba(225,72,108,.12)", color: "#C13584" }}>🏥 Firm / Hospital</span>
+                  : <span className="tag" style={{ background: internal ? "rgba(24,181,122,.12)" : "rgba(91,71,251,.12)", color: internal ? "#0F9B68" : "#4938D6" }}>
+                      {internal ? "In-house" : "Client"}
+                    </span>}
                 {c.self_approver && <span className="tag" style={{ background: "rgba(244,161,43,.14)", color: "#B45309" }}>Self-approves</span>}
               </div>
               <div className="cname">{c.name}</div>
+              {c.parent_id && <div style={{ fontSize: 12, fontWeight: 600, color: "#C13584", marginTop: 2 }}>Under: {firmName(c.parent_id) || "firm"}</div>}
               <div className="cpkg">{c.package || "—"}{admin && c.price > 0 ? ` · ₹${Number(c.price).toLocaleString("en-IN")}` : ""}</div>
               {(c.quota_videos > 0 || c.quota_posters > 0) && (
                 <div className="cpkg" style={{ color: "#475569" }}>
@@ -53,7 +58,7 @@ export default async function DoctorsPage() {
               <div className="cstats">
                 <span><b>{s.total}</b> items</span><span><b>{s.pub}</b> live</span><span><b>{fmt(s.views)}</b> views</span>
               </div>
-              {admin && <DoctorActions client={c} packages={packages || []} />}
+              {admin && <DoctorActions client={c} packages={packages || []} firms={firms} />}
             </div>
           );
         })}

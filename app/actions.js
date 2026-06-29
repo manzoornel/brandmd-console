@@ -97,6 +97,8 @@ export async function addClient(form) {
     package_id: pk.package_id, discount: pk.discount,
     quota_videos: pk.quota_videos, quota_posters: pk.quota_posters, price: pk.price,
     self_approver: form.get("self_approver") === "on",
+    parent_id: form.get("parent_id") || null,
+    is_firm: form.get("is_firm") === "on",
   });
   revalidatePath("/doctors"); revalidatePath("/dashboard");
 }
@@ -117,6 +119,8 @@ export async function editClient(form) {
     package_id: pk.package_id, discount: pk.discount,
     quota_videos: pk.quota_videos, quota_posters: pk.quota_posters, price: pk.price,
     self_approver: form.get("self_approver") === "on",
+    parent_id: form.get("parent_id") || null,
+    is_firm: form.get("is_firm") === "on",
   }).eq("id", id);
   revalidatePath("/doctors"); revalidatePath("/dashboard");
 }
@@ -131,7 +135,7 @@ export async function deleteClient(id) {
 /* ---------------- Workflow ---------------- */
 export async function addVideo(form) {
   const { supabase, profile } = await me();
-  if (!["super_admin", "admin", "editor", "designer"].some((r) => has(profile.roles, r)))
+  if (!["super_admin", "admin", "editor", "designer", "shooter"].some((r) => has(profile.roles, r)))
     throw new Error("Not allowed");
   await supabase.from("videos").insert({
     title: form.get("title"),
@@ -148,7 +152,7 @@ export async function addVideo(form) {
 export async function submitDrive(videoId, link) {
   const { supabase, profile } = await me();
   const { data: v } = await supabase.from("videos").select("item_type, editor_id").eq("id", videoId).single();
-  const roleNeeded = v?.item_type === "poster" ? "designer" : "editor";
+  const roleNeeded = v?.item_type === "poster" ? "designer" : v?.item_type === "shoot" ? "shooter" : "editor";
   const ok = admin_(profile.roles) ||
     (has(profile.roles, roleNeeded) && (!v?.editor_id || v.editor_id === profile.id));
   if (!ok) throw new Error("You don't have permission to submit this item.");
@@ -194,11 +198,14 @@ export async function savePost(videoId, fields) {
 
 export async function markPosted(videoId, fields) {
   const { supabase, profile } = await me();
-  const missing = [];
-  if (!fields.youtube || !fields.youtube.trim()) missing.push("YouTube");
-  if (!fields.instagram || !fields.instagram.trim()) missing.push("Instagram");
-  if (!fields.facebook || !fields.facebook.trim()) missing.push("Facebook");
-  if (missing.length) throw new Error(`Please paste the ${missing.join(", ")} link before publishing.`);
+  const { data: vt } = await supabase.from("videos").select("item_type").eq("id", videoId).single();
+  if (vt?.item_type !== "shoot") {
+    const missing = [];
+    if (!fields.youtube || !fields.youtube.trim()) missing.push("YouTube");
+    if (!fields.instagram || !fields.instagram.trim()) missing.push("Instagram");
+    if (!fields.facebook || !fields.facebook.trim()) missing.push("Facebook");
+    if (missing.length) throw new Error(`Please paste the ${missing.join(", ")} link before publishing.`);
+  }
   await supabase.from("videos").update({
     caption: fields.caption, hashtags: fields.hashtags, pinned_comment: fields.pinned,
     youtube_url: fields.youtube, instagram_url: fields.instagram, facebook_url: fields.facebook,

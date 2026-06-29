@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { editClient, deleteClient } from "@/app/actions";
 
-export default function DoctorActions({ client, packages = [] }) {
+export default function DoctorActions({ client, packages = [], firms = [] }) {
   const [mode, setMode] = useState(null); // 'edit' | 'confirm' | null
   const [pkgId, setPkgId] = useState(client.package_id || "");
   const [busy, setBusy] = useState(false);
@@ -89,6 +89,16 @@ export default function DoctorActions({ client, packages = [] }) {
                 </div>
               </>
             )}
+            <div style={{ background: "#F7F8FC", border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", marginTop: 14 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: "#475569" }}>
+                <input type="checkbox" name="is_firm" defaultChecked={c.is_firm} /> This is a <b>firm / hospital</b> (groups several doctors under it)
+              </label>
+              <label className="lbl" style={{ marginTop: 12 }}>Belongs to a firm / hospital (optional)</label>
+              <select className="input" name="parent_id" defaultValue={c.parent_id || ""}>
+                <option value="">— Standalone (no firm) —</option>
+                {firms.filter((f) => f.id !== c.id).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+              </select>
+            </div>
             <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 13.5, color: "#475569" }}>
               <input type="checkbox" name="self_approver" defaultChecked={c.self_approver} /> This doctor approves their own content
             </label>

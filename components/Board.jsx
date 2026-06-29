@@ -10,6 +10,8 @@ import {
 } from "@/app/actions";
 import { youTubeEmbed } from "@/lib/youtube";
 
+const roleFor = (t) => (t === "poster" ? "designer" : t === "shoot" ? "shooter" : "editor");
+
 const DUE_COLORS = {
   over:  { bg: "#FDECEC", fg: "#B42318" },
   today: { bg: "#FEF3C7", fg: "#B45309" },
@@ -33,7 +35,11 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
   const [modal, setModal] = useState(null);
   const [open, setOpen] = useState({}); // user toggles for doctor groups
   const nameOf = (id) => people.find((p) => p.id === id)?.full_name || "—";
-  const clientOf = (id) => clients.find((c) => c.id === id)?.name || "— No doctor —";
+  const clientById = (id) => clients.find((c) => c.id === id);
+  const clientOf = (id) => clientById(id)?.name || "— No doctor —";
+  const topKeyOf = (v) => { const c = clientById(v.client_id); return (c && c.parent_id) || v.client_id; };
+  const subNameOf = (v) => { const c = clientById(v.client_id); return c && c.parent_id ? c.name : null; };
+  const dueVal = (v) => (v.due_date ? new Date(v.due_date).getTime() : Infinity);
 
   const shown = useMemo(
     () => (filter === "all" ? videos : videos.filter((v) => v.client_id === filter)),
@@ -63,10 +69,15 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
       <div className="kanban">
         {STAGES.map((st) => {
           const items = shown.filter((v) => v.stage === st.key);
-          // group by client
+          // group by firm (parent) if present, else by the doctor
           const groups = {};
-          items.forEach((v) => { (groups[v.client_id] || (groups[v.client_id] = [])).push(v); });
-          const groupList = Object.entries(groups).sort((a, b) => b[1].length - a[1].length);
+          items.forEach((v) => { const k = topKeyOf(v); (groups[k] || (groups[k] = [])).push(v); });
+          // sort each group's items by due date (earliest/overdue first), and groups by their earliest due
+          Object.values(groups).forEach((arr) => arr.sort((a, b) => dueVal(a) - dueVal(b)));
+          const groupList = Object.entries(groups).sort((a, b) => {
+            const ea = Math.min(...a[1].map(dueVal)), eb = Math.min(...b[1].map(dueVal));
+            return ea - eb;
+          });
           return (
             <section className="col" key={st.key}>
               <div className="col-top">
@@ -92,7 +103,7 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
                         <div className="dgroup-body">
                           {arr.map((v) => (
                             <Card key={v.id} v={v} roles={roles} myId={myId} myClientId={myClientId}
-                              editorName={nameOf(v.editor_id)}
+                              editorName={nameOf(v.editor_id)} subName={subNameOf(v)}
                               onAction={(type) => setModal({ type, video: v })} />
                           ))}
                         </div>
@@ -116,20 +127,22 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
 }
 
 function TypeBadge({ type }) {
-  const poster = type === "poster";
-  return (
-    <span className="tag" style={{ background: poster ? "rgba(244,161,43,.14)" : "rgba(91,71,251,.12)",
-      color: poster ? "#B45309" : "#4938D6", fontSize: 10 }}>{poster ? "POSTER" : "VIDEO"}</span>
-  );
+  const map = {
+    poster: { bg: "rgba(244,161,43,.14)", fg: "#B45309", label: "POSTER" },
+    shoot:  { bg: "rgba(225,72,108,.12)", fg: "#C13584", label: "🎬 SHOOT" },
+    video:  { bg: "rgba(91,71,251,.12)", fg: "#4938D6", label: "VIDEO" },
+  };
+  const m = map[type] || map.video;
+  return <span className="tag" style={{ background: m.bg, color: m.fg, fontSize: 10 }}>{m.label}</span>;
 }
 
-function Card({ v, roles, myId, myClientId, editorName, onAction }) {
+function Card({ v, roles, myId, myClientId, editorName, subName, onAction }) {
   const sm = stageMeta(v.stage);
   const idx = STAGE_INDEX[v.stage];
   const total = (v.yt_views || 0) + (v.ig_views || 0) + (v.fb_views || 0);
   const act = cardAction(v, roles, myId, myClientId);
   const canEdit = isAdmin(roles) || v.editor_id === myId;
-  const roleForType = v.item_type === "poster" ? "designer" : "editor";
+  const roleForType = roleFor(v.item_type);
   const locked = v.stage === "to_edit" && v.editor_id && v.editor_id !== myId
     && !isAdmin(roles) && hasRole(roles, roleForType);
   return (
@@ -144,6 +157,7 @@ function Card({ v, roles, myId, myClientId, editorName, onAction }) {
         </span>
       </div>
       <div className="card-title">{v.title}</div>
+      {subName && <div style={{ fontSize: 11.5, fontWeight: 600, color: "#5B47FB", marginBottom: 6 }}>👤 {subName}</div>}
       {v.stage === "to_edit" && v.brief && <div className="brief">📋 {v.brief}</div>}
       <div className="pipe">
         {STAGES.map((s, i) => (
@@ -172,11 +186,11 @@ function Card({ v, roles, myId, myClientId, editorName, onAction }) {
 
 function cardAction(v, roles, myId, myClientId) {
   const adminOrClient = isAdmin(roles) || (hasRole(roles, "client") && v.client_id === myClientId);
-  const roleForType = v.item_type === "poster" ? "designer" : "editor";
+  const roleForType = roleFor(v.item_type);
   const canCreatorAct = (isAdmin(roles) || hasRole(roles, roleForType)) &&
     (isAdmin(roles) || !v.editor_id || v.editor_id === myId);
   if (v.stage === "to_edit" && canCreatorAct)
-    return { type: "submit", label: v.item_type === "poster" ? "Add file & submit" : "Add Drive link & submit" };
+    return { type: "submit", label: v.item_type === "poster" ? "Add file & submit" : v.item_type === "shoot" ? "Submit shoot" : "Add Drive link & submit" };
   if (v.stage === "review" && adminOrClient) return { type: "review", label: "Review" };
   if (v.stage === "content" && (hasRole(roles, "writer") || isAdmin(roles))) return { type: "post", label: "Write content & post" };
   if (v.stage === "published" && isAdmin(roles)) return { type: "views", label: "Views" };
@@ -225,7 +239,7 @@ function NewItem({ clients, people, close }) {
   const [brief, setBrief] = useState("");
   const [due, setDue] = useState("");
   const [busy, setBusy] = useState(false);
-  const roleForType = type === "poster" ? "designer" : "editor";
+  const roleForType = roleFor(type);
   const creators = people.filter((p) => (p.roles || []).includes(roleForType));
   async function save() {
     if (!title.trim()) return;
@@ -244,11 +258,13 @@ function NewItem({ clients, people, close }) {
         <div style={{ flex: 1, minWidth: 150 }}>
           <label className="lbl">Type</label>
           <select className="input" value={type} onChange={(e) => { setType(e.target.value); setEditorId(""); }}>
-            <option value="video">Video</option><option value="poster">Poster / Image</option>
+            <option value="video">Video</option>
+            <option value="poster">Poster / Image</option>
+            <option value="shoot">Shooting</option>
           </select>
         </div>
         <div style={{ flex: 1, minWidth: 150 }}>
-          <label className="lbl">Due date</label>
+          <label className="lbl">{type === "shoot" ? "Shoot date" : "Due date"}</label>
           <input className="input" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
         </div>
       </div>
@@ -260,10 +276,10 @@ function NewItem({ clients, people, close }) {
       <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)}>
         {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
-      <label className="lbl">Assign to ({type === "poster" ? "Designer" : "Video Editor"})</label>
+      <label className="lbl">Assign to ({type === "poster" ? "Designer" : type === "shoot" ? "Videographer" : "Video Editor"})</label>
       <select className="input" value={editorId} onChange={(e) => setEditorId(e.target.value)}>
         <option value="">— Unassigned —</option>
-        {creators.length === 0 && <option value="" disabled>No {type === "poster" ? "designer" : "video editor"} yet</option>}
+        {creators.length === 0 && <option value="" disabled>No {type === "poster" ? "designer" : type === "shoot" ? "videographer" : "video editor"} yet</option>}
         {creators.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
       </select>
       <div className="mbtns">
@@ -280,7 +296,7 @@ function EditItem({ v, clients, people, close }) {
     due_date: v.due_date || "", brief: v.brief || "",
     client_id: v.client_id || "", editor_id: v.editor_id || "",
   });
-  const roleForType = f.item_type === "poster" ? "designer" : "editor";
+  const roleForType = roleFor(f.item_type);
   const creators = people.filter((p) => (p.roles || []).includes(roleForType));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -301,7 +317,9 @@ function EditItem({ v, clients, people, close }) {
         <div style={{ flex: 1, minWidth: 150 }}>
           <label className="lbl">Type</label>
           <select className="input" value={f.item_type} onChange={(e) => setF({ ...f, item_type: e.target.value, editor_id: "" })}>
-            <option value="video">Video</option><option value="poster">Poster / Image</option>
+            <option value="video">Video</option>
+            <option value="poster">Poster / Image</option>
+            <option value="shoot">Shooting</option>
           </select>
         </div>
         <div style={{ flex: 1, minWidth: 150 }}>
@@ -382,11 +400,13 @@ function PostContent({ v, close }) {
 
   async function draft() { setBusy(true); await savePost(v.id, f); close(); }
   async function post() {
-    const missing = [];
-    if (!f.youtube.trim()) missing.push("YouTube");
-    if (!f.instagram.trim()) missing.push("Instagram");
-    if (!f.facebook.trim()) missing.push("Facebook");
-    if (missing.length) { setErr(`Please paste the ${missing.join(", ")} link before publishing.`); return; }
+    if (v.item_type !== "shoot") {
+      const missing = [];
+      if (!f.youtube.trim()) missing.push("YouTube");
+      if (!f.instagram.trim()) missing.push("Instagram");
+      if (!f.facebook.trim()) missing.push("Facebook");
+      if (missing.length) { setErr(`Please paste the ${missing.join(", ")} link before publishing.`); return; }
+    }
     setErr(""); setBusy(true);
     try { await markPosted(v.id, f); close(); } catch (e) { setErr(e.message); setBusy(false); }
   }
@@ -401,7 +421,9 @@ function PostContent({ v, close }) {
       <input className="input" value={f.hashtags} onChange={set("hashtags")} placeholder="#diabetes #doctoruncle" />
       <label className="lbl">Pinned comment</label>
       <input className="input" value={f.pinned} onChange={set("pinned")} placeholder="e.g. Book an appointment — link in bio" />
-      <p className="hint" style={{ marginTop: 14, fontWeight: 600, color: "#1A1730" }}>All three links are required to publish:</p>
+      <p className="hint" style={{ marginTop: 14, fontWeight: 600, color: "#1A1730" }}>
+        {v.item_type === "shoot" ? "Links are optional for a shoot:" : "All three links are required to publish:"}
+      </p>
       <label className="lbl">YouTube link *</label>
       <input className="input" value={f.youtube} onChange={set("youtube")} placeholder="https://youtu.be/…" />
       {embed && (
@@ -416,7 +438,7 @@ function PostContent({ v, close }) {
       {err && <p className="hint" style={{ color: "#B42318", fontWeight: 600 }}>{err}</p>}
       <div className="mbtns">
         <button className="btn btn-ghost" disabled={busy} onClick={draft}>Save draft</button>
-        <button className="cta" disabled={busy} onClick={post}>Mark posted ✓</button>
+        <button className="cta" disabled={busy} onClick={post}>{v.item_type === "shoot" ? "Mark done ✓" : "Mark posted ✓"}</button>
       </div>
     </div>
   );
