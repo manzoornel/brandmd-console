@@ -19,6 +19,8 @@ create table if not exists clients (
   quota_posters int not null default 0,
   self_approver boolean not null default false,
   price numeric not null default 0,
+  package_id uuid,
+  discount numeric not null default 0,
   follow_up_date date,
   follow_up_note text default '',
   created_at timestamptz not null default now()
@@ -188,3 +190,17 @@ alter table payments enable row level security;
 drop policy if exists "admin all payments" on payments;
 create policy "admin all payments" on payments for all using (is_admin()) with check (is_admin());
 create index if not exists idx_payments_client on payments(client_id);
+
+
+-- ---------- v3 r3b: packages catalog ----------
+create table if not exists packages (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  price numeric not null default 0,
+  quota_videos int not null default 0,
+  quota_posters int not null default 0,
+  created_at timestamptz not null default now()
+);
+alter table packages enable row level security;
+drop policy if exists "admin all packages" on packages;
+create policy "admin all packages" on packages for all using (is_admin()) with check (is_admin());

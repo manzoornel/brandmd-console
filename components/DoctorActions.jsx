@@ -3,8 +3,9 @@
 import { useState } from "react";
 import { editClient, deleteClient } from "@/app/actions";
 
-export default function DoctorActions({ client }) {
+export default function DoctorActions({ client, packages = [] }) {
   const [mode, setMode] = useState(null); // 'edit' | 'confirm' | null
+  const [pkgId, setPkgId] = useState(client.package_id || "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const c = client;
@@ -20,6 +21,7 @@ export default function DoctorActions({ client }) {
     try { await deleteClient(c.id); setMode(null); }
     catch (e) { setErr(e.message); setBusy(false); }
   }
+  const usingPkg = !!pkgId;
 
   return (
     <>
@@ -58,24 +60,35 @@ export default function DoctorActions({ client }) {
                 </select>
               </div>
               <div style={{ flex: 1, minWidth: 150 }}>
-                <label className="lbl">Package name</label>
+                <label className="lbl">Package (from catalog)</label>
+                <select className="input" name="package_id" value={pkgId} onChange={(e) => setPkgId(e.target.value)}>
+                  <option value="">— Custom —</option>
+                  {packages.map((p) => <option key={p.id} value={p.id}>{p.name} · ₹{Number(p.price).toLocaleString("en-IN")}</option>)}
+                </select>
+              </div>
+            </div>
+            {usingPkg ? (
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 150 }}>
+                  <label className="lbl">Discount (₹)</label>
+                  <input className="input" name="discount" type="number" min="0" defaultValue={c.discount || 0} />
+                </div>
+                <div style={{ flex: 1, minWidth: 150 }}>
+                  <label className="lbl">Label (optional)</label>
+                  <input className="input" name="package" defaultValue={c.package} />
+                </div>
+              </div>
+            ) : (
+              <>
+                <label className="lbl">Custom package label</label>
                 <input className="input" name="package" defaultValue={c.package} />
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: 120 }}>
-                <label className="lbl">Videos / month</label>
-                <input className="input" name="quota_videos" type="number" min="0" defaultValue={c.quota_videos} />
-              </div>
-              <div style={{ flex: 1, minWidth: 120 }}>
-                <label className="lbl">Posters / month</label>
-                <input className="input" name="quota_posters" type="number" min="0" defaultValue={c.quota_posters} />
-              </div>
-              <div style={{ flex: 1, minWidth: 120 }}>
-                <label className="lbl">Price (₹)</label>
-                <input className="input" name="price" type="number" min="0" defaultValue={c.price} />
-              </div>
-            </div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 110 }}><label className="lbl">Videos / month</label><input className="input" name="quota_videos" type="number" min="0" defaultValue={c.quota_videos} /></div>
+                  <div style={{ flex: 1, minWidth: 110 }}><label className="lbl">Posters / month</label><input className="input" name="quota_posters" type="number" min="0" defaultValue={c.quota_posters} /></div>
+                  <div style={{ flex: 1, minWidth: 110 }}><label className="lbl">Price (₹)</label><input className="input" name="price" type="number" min="0" defaultValue={c.price} /></div>
+                </div>
+              </>
+            )}
             <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 13.5, color: "#475569" }}>
               <input type="checkbox" name="self_approver" defaultChecked={c.self_approver} /> This doctor approves their own content
             </label>

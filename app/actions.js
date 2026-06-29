@@ -89,13 +89,13 @@ export async function addClient(form) {
   if (existing && existing.length) {
     throw new Error(`A doctor named "${name}" already exists. Make it unique, e.g. "${name} (2)".`);
   }
+  const pk = await resolvePackage(supabase, form);
   await supabase.from("clients").insert({
     name,
     type: form.get("type") || "external",
     package: form.get("package") || "",
-    quota_videos: Number(form.get("quota_videos")) || 0,
-    quota_posters: Number(form.get("quota_posters")) || 0,
-    price: Number(form.get("price")) || 0,
+    package_id: pk.package_id, discount: pk.discount,
+    quota_videos: pk.quota_videos, quota_posters: pk.quota_posters, price: pk.price,
     self_approver: form.get("self_approver") === "on",
   });
   revalidatePath("/doctors"); revalidatePath("/dashboard");
@@ -109,13 +109,13 @@ export async function editClient(form) {
   if (!id || !name) throw new Error("Name is required");
   const { data: dup } = await supabase.from("clients").select("id").ilike("name", name).neq("id", id);
   if (dup && dup.length) throw new Error(`Another doctor named "${name}" already exists.`);
+  const pk = await resolvePackage(supabase, form);
   await supabase.from("clients").update({
     name,
     type: form.get("type") || "external",
     package: form.get("package") || "",
-    quota_videos: Number(form.get("quota_videos")) || 0,
-    quota_posters: Number(form.get("quota_posters")) || 0,
-    price: Number(form.get("price")) || 0,
+    package_id: pk.package_id, discount: pk.discount,
+    quota_videos: pk.quota_videos, quota_posters: pk.quota_posters, price: pk.price,
     self_approver: form.get("self_approver") === "on",
   }).eq("id", id);
   revalidatePath("/doctors"); revalidatePath("/dashboard");
@@ -146,7 +146,12 @@ export async function addVideo(form) {
 }
 
 export async function submitDrive(videoId, link) {
-  const { supabase } = await me();
+  const { supabase, profile } = await me();
+  const { data: v } = await supabase.from("videos").select("item_type, editor_id").eq("id", videoId).single();
+  const roleNeeded = v?.item_type === "poster" ? "designer" : "editor";
+  const ok = admin_(profile.roles) ||
+    (has(profile.roles, roleNeeded) && (!v?.editor_id || v.editor_id === profile.id));
+  if (!ok) throw new Error("You don't have permission to submit this item.");
   await supabase.from("videos").update({
     drive_link: link, stage: "review",
     submitted_at: new Date().toISOString(), rejection_note: "",
@@ -255,7 +260,7 @@ export async function updateUser(form) {
   await createAdminClient().from("profiles").update({
     full_name, roles, client_id: roles.includes("client") ? client_id : null,
   }).eq("id", id);
-  revalidatePath("/users");
+  revalidatePath("/users"); revalidatePath("/dashboard");
 }
 
 export async function recordPayment(form) {
@@ -297,4 +302,41 @@ export async function editVideo(form) {
     editor_id: form.get("editor_id") || null,
   }).eq("id", id);
   revalidatePath("/dashboard");
+}
+
+/* ---------------- v3 Round 3B: packages catalog ---------------- */
+export async function createPackage(form) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  const name = (form.get("name") || "").trim();
+  if (!name) throw new Error("Package name is required");
+  await supabase.from("packages").insert({
+    name,
+    price: Number(form.get("price")) || 0,
+    quota_videos: Number(form.get("quota_videos")) || 0,
+    quota_posters: Number(form.get("quota_posters")) || 0,
+  });
+  revalidatePath("/packages"); revalidatePath("/doctors");
+}
+
+export async function deletePackage(id) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  await supabase.from("packages").delete().eq("id", id);
+  revalidatePath("/packages");
+}
+
+// Resolve package + discount into final quotas/price (used by add/edit client)
+async function resolvePackage(supabase, form) {
+  const package_id = form.get("package_id") || null;
+  const discount = Number(form.get("discount")) || 0;
+  let quota_videos = Number(form.get("quota_videos")) || 0;
+  let quota_posters = Number(form.get("quota_posters")) || 0;
+  let price = Number(form.get("price")) || 0;
+  if (package_id) {
+    const { data: pk } = await supabase.from("packages").select("*").eq("id", package_id).single();
+    if (pk) { quota_videos = pk.quota_videos; quota_posters = pk.quota_posters; price = Number(pk.price) - discount; }
+  }
+  if (price < 0) price = 0;
+  return { package_id, discount, quota_videos, quota_posters, price };
 }

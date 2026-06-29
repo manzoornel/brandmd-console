@@ -11,9 +11,10 @@ export default async function DoctorsPage() {
   const admin = isAdmin(profile.roles);
   const supabase = createClient();
   const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-  const [{ data: clients }, { data: videos }] = await Promise.all([
+  const [{ data: clients }, { data: videos }, { data: packages }] = await Promise.all([
     supabase.from("clients").select("*").order("created_at"),
     supabase.from("videos").select("client_id, stage, item_type, yt_views, ig_views, fb_views, created_at"),
+    admin ? supabase.from("packages").select("id, name, price").order("created_at") : Promise.resolve({ data: [] }),
   ]);
   const stat = (c) => {
     const ts = (videos || []).filter((v) => v.client_id === c.id);
@@ -28,7 +29,7 @@ export default async function DoctorsPage() {
     <div className="body">
       <div className="head">
         <div><h1>Doctors & packages</h1><p className="sub">In-house brands plus external doctors you produce for.</p></div>
-        {admin && <AddClientForm />}
+        {admin && <AddClientForm packages={packages || []} />}
       </div>
       <div className="clientgrid">
         {(clients || []).map((c) => {
@@ -52,7 +53,7 @@ export default async function DoctorsPage() {
               <div className="cstats">
                 <span><b>{s.total}</b> items</span><span><b>{s.pub}</b> live</span><span><b>{fmt(s.views)}</b> views</span>
               </div>
-              {admin && <DoctorActions client={c} />}
+              {admin && <DoctorActions client={c} packages={packages || []} />}
             </div>
           );
         })}

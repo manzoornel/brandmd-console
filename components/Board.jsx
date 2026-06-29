@@ -129,8 +129,9 @@ function Card({ v, roles, myId, myClientId, editorName, onAction }) {
   const total = (v.yt_views || 0) + (v.ig_views || 0) + (v.fb_views || 0);
   const act = cardAction(v, roles, myId, myClientId);
   const canEdit = isAdmin(roles) || v.editor_id === myId;
+  const roleForType = v.item_type === "poster" ? "designer" : "editor";
   const locked = v.stage === "to_edit" && v.editor_id && v.editor_id !== myId
-    && !isAdmin(roles) && (hasRole(roles, "editor") || hasRole(roles, "designer"));
+    && !isAdmin(roles) && hasRole(roles, roleForType);
   return (
     <article className="card" style={{ borderLeft: `3px solid ${sm.color}` }}>
       <div className="card-top">
@@ -171,7 +172,8 @@ function Card({ v, roles, myId, myClientId, editorName, onAction }) {
 
 function cardAction(v, roles, myId, myClientId) {
   const adminOrClient = isAdmin(roles) || (hasRole(roles, "client") && v.client_id === myClientId);
-  const canCreatorAct = (hasRole(roles, "editor") || hasRole(roles, "designer")) &&
+  const roleForType = v.item_type === "poster" ? "designer" : "editor";
+  const canCreatorAct = (isAdmin(roles) || hasRole(roles, roleForType)) &&
     (isAdmin(roles) || !v.editor_id || v.editor_id === myId);
   if (v.stage === "to_edit" && canCreatorAct)
     return { type: "submit", label: v.item_type === "poster" ? "Add file & submit" : "Add Drive link & submit" };
@@ -216,14 +218,15 @@ function PanelHead({ v, label }) {
 }
 
 function NewItem({ clients, people, close }) {
-  const creators = people.filter((p) => (p.roles || []).some((r) => ["editor", "designer"].includes(r)));
   const [title, setTitle] = useState("");
   const [type, setType] = useState("video");
   const [clientId, setClientId] = useState(clients[0]?.id || "");
-  const [editorId, setEditorId] = useState(creators[0]?.id || "");
+  const [editorId, setEditorId] = useState("");
   const [brief, setBrief] = useState("");
   const [due, setDue] = useState("");
   const [busy, setBusy] = useState(false);
+  const roleForType = type === "poster" ? "designer" : "editor";
+  const creators = people.filter((p) => (p.roles || []).includes(roleForType));
   async function save() {
     if (!title.trim()) return;
     setBusy(true);
@@ -240,7 +243,7 @@ function NewItem({ clients, people, close }) {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 150 }}>
           <label className="lbl">Type</label>
-          <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
+          <select className="input" value={type} onChange={(e) => { setType(e.target.value); setEditorId(""); }}>
             <option value="video">Video</option><option value="poster">Poster / Image</option>
           </select>
         </div>
@@ -257,9 +260,10 @@ function NewItem({ clients, people, close }) {
       <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)}>
         {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
-      <label className="lbl">Assign to</label>
+      <label className="lbl">Assign to ({type === "poster" ? "Designer" : "Video Editor"})</label>
       <select className="input" value={editorId} onChange={(e) => setEditorId(e.target.value)}>
-        {creators.length === 0 && <option value="">No editor/designer yet</option>}
+        <option value="">— Unassigned —</option>
+        {creators.length === 0 && <option value="" disabled>No {type === "poster" ? "designer" : "video editor"} yet</option>}
         {creators.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
       </select>
       <div className="mbtns">
@@ -271,12 +275,13 @@ function NewItem({ clients, people, close }) {
 }
 
 function EditItem({ v, clients, people, close }) {
-  const creators = people.filter((p) => (p.roles || []).some((r) => ["editor", "designer"].includes(r)));
   const [f, setF] = useState({
     title: v.title || "", item_type: v.item_type || "video",
     due_date: v.due_date || "", brief: v.brief || "",
     client_id: v.client_id || "", editor_id: v.editor_id || "",
   });
+  const roleForType = f.item_type === "poster" ? "designer" : "editor";
+  const creators = people.filter((p) => (p.roles || []).includes(roleForType));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -295,7 +300,7 @@ function EditItem({ v, clients, people, close }) {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 150 }}>
           <label className="lbl">Type</label>
-          <select className="input" value={f.item_type} onChange={set("item_type")}>
+          <select className="input" value={f.item_type} onChange={(e) => setF({ ...f, item_type: e.target.value, editor_id: "" })}>
             <option value="video">Video</option><option value="poster">Poster / Image</option>
           </select>
         </div>
