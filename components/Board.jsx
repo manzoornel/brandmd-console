@@ -5,7 +5,7 @@ import { STAGES, STAGE_INDEX, stageMeta, ITEM_TYPES } from "@/lib/stages";
 import { isAdmin, hasRole } from "@/lib/roles";
 import { fmt, dueInfo, shortDate } from "@/lib/format";
 import {
-  addVideo, editVideo, submitDrive, approveVideo, rejectVideo,
+  addVideo, editVideo, deleteVideo, submitDrive, approveVideo, rejectVideo,
   savePost, markPosted, updateViews, startTask, refreshYouTubeViews,
 } from "@/app/actions";
 import { youTubeEmbed } from "@/lib/youtube";
@@ -154,6 +154,7 @@ function Card({ v, roles, myId, myClientId, editorName, subName, onAction }) {
             ? <span className="views"><span className="pulse" />{fmt(total)} views</span>
             : <DueBadge due={v.due_date} small />}
           {canEdit && <button className="editpen" title="Edit details" onClick={() => onAction("edit")}>✎</button>}
+          {isAdmin(roles) && <button className="delpen" title="Delete item" onClick={() => onAction("delete")}>🗑</button>}
         </span>
       </div>
       <div className="card-title">{v.title}</div>
@@ -213,6 +214,7 @@ function ActionPanel({ modal, roles, clients, people, close }) {
   const { type, video } = modal;
   if (type === "new") return <NewItem clients={clients} people={people} close={close} />;
   if (type === "edit") return <EditItem v={video} clients={clients} people={people} close={close} />;
+  if (type === "delete") return <DeleteItem v={video} close={close} />;
   if (type === "submit") return <SubmitDrive v={video} close={close} />;
   if (type === "review") return <Review v={video} close={close} />;
   if (type === "post") return <PostContent v={video} close={close} />;
@@ -344,6 +346,27 @@ function EditItem({ v, clients, people, close }) {
       <div className="mbtns">
         <button className="btn btn-ghost" onClick={close}>Cancel</button>
         <button className="cta" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save changes"}</button>
+      </div>
+    </div>
+  );
+}
+
+function DeleteItem({ v, close }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  async function del() {
+    setBusy(true); setErr("");
+    try { await deleteVideo(v.id); close(); } catch (e) { setErr(e.message); setBusy(false); }
+  }
+  return (
+    <div>
+      <div className="eyebrow" style={{ color: "#B42318" }}>Delete item</div>
+      <h2 className="mtitle">Delete “{v.title}”?</h2>
+      <p className="hint">This permanently removes the item and its time logs. This can’t be undone.</p>
+      {err && <p className="hint" style={{ color: "#B42318" }}>{err}</p>}
+      <div className="mbtns">
+        <button className="btn btn-ghost" onClick={close}>Cancel</button>
+        <button className="btn btn-danger" disabled={busy} onClick={del}>{busy ? "Deleting…" : "Yes, delete"}</button>
       </div>
     </div>
   );

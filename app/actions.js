@@ -347,3 +347,72 @@ async function resolvePackage(supabase, form) {
   if (price < 0) price = 0;
   return { package_id, discount, quota_videos, quota_posters, price };
 }
+
+/* ---------------- v3 Round 3D: delete pipeline item (admin, confirmed) ---------------- */
+export async function deleteVideo(id) {
+  const { profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Only an admin can delete items.");
+  const admin = createAdminClient();
+  await admin.from("task_time_logs").delete().eq("video_id", id);
+  await admin.from("videos").delete().eq("id", id);
+  revalidatePath("/dashboard");
+}
+
+/* ---------------- v3 Round 3D: expenses / assets / partners (accounting) ---------------- */
+export async function addExpense(form) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  const amount = Number(form.get("amount"));
+  if (!amount || amount <= 0) throw new Error("Enter a valid amount");
+  await supabase.from("expenses").insert({
+    category: form.get("category") || "Other",
+    amount,
+    note: form.get("note") || "",
+    spent_at: form.get("spent_at") || new Date().toISOString().slice(0, 10),
+    created_by: profile.id,
+  });
+  revalidatePath("/accounts");
+}
+export async function deleteExpense(id) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  await supabase.from("expenses").delete().eq("id", id);
+  revalidatePath("/accounts");
+}
+
+export async function addAsset(form) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  const value = Number(form.get("value"));
+  if (!form.get("name")) throw new Error("Enter an asset name");
+  await supabase.from("assets").insert({
+    name: form.get("name"),
+    value: value || 0,
+    acquired_at: form.get("acquired_at") || new Date().toISOString().slice(0, 10),
+    note: form.get("note") || "",
+  });
+  revalidatePath("/accounts");
+}
+export async function deleteAsset(id) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  await supabase.from("assets").delete().eq("id", id);
+  revalidatePath("/accounts");
+}
+
+export async function addPartner(form) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  if (!form.get("name")) throw new Error("Enter a partner name");
+  await supabase.from("partners").insert({
+    name: form.get("name"),
+    share_pct: Number(form.get("share_pct")) || 0,
+  });
+  revalidatePath("/accounts");
+}
+export async function deletePartner(id) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  await supabase.from("partners").delete().eq("id", id);
+  revalidatePath("/accounts");
+}
