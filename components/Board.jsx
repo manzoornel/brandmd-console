@@ -394,14 +394,26 @@ function SubmitDrive({ v, close }) {
 function Review({ v, close }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  async function ok() { setBusy(true); await approveVideo(v.id); close(); }
-  async function back() { setBusy(true); await rejectVideo(v.id, note.trim()); close(); }
+  const [err, setErr] = useState("");
+  async function decide(action) {
+    setErr(""); setBusy(true);
+    try {
+      await action();
+      close();
+    } catch (error) {
+      setErr(error?.message || "Unable to save this decision. Please try again.");
+      setBusy(false);
+    }
+  }
+  async function ok() { await decide(() => approveVideo(v.id)); }
+  async function back() { await decide(() => rejectVideo(v.id, note.trim())); }
   return (
     <div>
       <PanelHead v={v} label="Review" />
       {v.drive_link && <a className="drivebox" href={v.drive_link} target="_blank" rel="noreferrer">▶ Open the file ↗</a>}
       <label className="lbl">If sending back, say what to fix</label>
       <textarea className="textarea" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Trim the intro…" />
+      {err && <div style={{ marginTop: 10, padding: "9px 11px", borderRadius: 8, background: "#FDECEC", color: "#B42318", fontSize: 13 }}>{err}</div>}
       <div className="mbtns">
         <button className="btn btn-danger" disabled={busy} onClick={back}>Send back</button>
         <button className="cta" disabled={busy} onClick={ok}>Approve →</button>
@@ -538,3 +550,4 @@ function TaskTimerPill() {
   );
 }
 const linkBtn = { background: "none", border: "none", color: "#5B47FB", fontWeight: 700, fontSize: 12, cursor: "pointer", marginLeft: 6 };
+
