@@ -165,24 +165,28 @@ export async function submitDrive(videoId, link) {
 
 export async function approveVideo(videoId) {
   const { supabase, profile } = await me();
-  const { data: v } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  const { data: v, error: loadError } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  if (loadError) throw new Error("Unable to load this item. Please refresh and try again.");
   const isClientApprover = has(profile.roles, "client") && profile.client_id && v?.client_id === profile.client_id;
   if (!admin_(profile.roles) && !isClientApprover) throw new Error("Not allowed to approve");
-  await supabase.from("videos").update({
+  const { error } = await supabase.from("videos").update({
     stage: "content", approver_id: profile.id,
     approved_at: new Date().toISOString(), rejection_note: "",
   }).eq("id", videoId);
+  if (error) throw new Error("Approval could not be saved. Please try again.");
   revalidatePath("/dashboard");
 }
 
 export async function rejectVideo(videoId, note) {
   const { supabase, profile } = await me();
-  const { data: v } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  const { data: v, error: loadError } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  if (loadError) throw new Error("Unable to load this item. Please refresh and try again.");
   const isClientApprover = has(profile.roles, "client") && profile.client_id && v?.client_id === profile.client_id;
   if (!admin_(profile.roles) && !isClientApprover) throw new Error("Not allowed");
-  await supabase.from("videos").update({
+  const { error } = await supabase.from("videos").update({
     stage: "to_edit", rejection_note: note || "Needs changes", submitted_at: null,
   }).eq("id", videoId);
+  if (error) throw new Error("The review decision could not be saved. Please try again.");
   revalidatePath("/dashboard");
 }
 
@@ -416,3 +420,4 @@ export async function deletePartner(id) {
   await supabase.from("partners").delete().eq("id", id);
   revalidatePath("/accounts");
 }
+
