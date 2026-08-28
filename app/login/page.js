@@ -1,26 +1,39 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { clockIn } from "@/app/actions";
 import Logo from "@/components/Logo";
 
 export default function LoginPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit() {
+    if (busy) return;
     setErr(""); setBusy(true);
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) { setErr(error.message); setBusy(false); return; }
-    clockIn().catch(() => {});
-    router.push("/dashboard");
-    router.refresh();
+
+    try {
+      const supabase = createClient();
+      const timeout = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("Sign-in is taking too long. Please check your connection and try again.")), 15000);
+      });
+      const { error } = await Promise.race([
+        supabase.auth.signInWithPassword({ email: email.trim(), password }),
+        timeout,
+      ]);
+
+      if (error) throw error;
+
+      // Attendance must never delay access to the workspace.
+      clockIn().catch(() => {});
+      window.location.replace("/dashboard");
+    } catch (error) {
+      setErr(error?.message || "Unable to sign in. Please try again.");
+      setBusy(false);
+    }
   }
 
   return (
@@ -69,3 +82,4 @@ const S = {
   err: { marginTop: 12, background: "#FDECEC", color: "#B42318", borderRadius: 8, padding: "9px 12px", fontSize: 13 },
   note: { fontSize: 11.5, color: "#9AA0AE", marginTop: 16, lineHeight: 1.5 },
 };
+
