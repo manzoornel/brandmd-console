@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
-import { clockIn } from "@/app/actions";
+import { clockIn, loginWithPassword } from "@/app/actions";
 import Logo from "@/components/Logo";
 
 export default function LoginPage() {
@@ -16,16 +15,15 @@ export default function LoginPage() {
     setErr(""); setBusy(true);
 
     try {
-      const supabase = createClient();
       const timeout = new Promise((_, reject) => {
         setTimeout(() => reject(new Error("Sign-in is taking too long. Please check your connection and try again.")), 15000);
       });
-      const { error } = await Promise.race([
-        supabase.auth.signInWithPassword({ email: email.trim(), password }),
+      const result = await Promise.race([
+        loginWithPassword(email, password),
         timeout,
       ]);
 
-      if (error) throw error;
+      if (result?.error) throw new Error(result.error);
 
       // Attendance must never delay access to the workspace.
       clockIn().catch(() => {});
