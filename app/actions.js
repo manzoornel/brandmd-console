@@ -15,6 +15,19 @@ async function me() {
 const has = (roles, r) => Array.isArray(roles) && roles.includes(r);
 const admin_ = (roles) => has(roles, "super_admin") || has(roles, "admin");
 
+export async function loginWithPassword(email, password) {
+  try {
+    const supabase = createClient();
+    const { error } = await supabase.auth.signInWithPassword({
+      email: String(email || "").trim(),
+      password: String(password || ""),
+    });
+    return { error: error?.message || null };
+  } catch (_) {
+    return { error: "Unable to reach the sign-in service. Please try again." };
+  }
+}
+
 /* ---------------- Attendance ---------------- */
 export async function clockIn() {
   const { supabase, user } = await me();
