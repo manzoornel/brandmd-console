@@ -9,8 +9,18 @@ import {
   savePost, markPosted, updateViews, startTask, refreshYouTubeViews,
 } from "@/app/actions";
 import { youTubeEmbed } from "@/lib/youtube";
+import { effectiveStaffVideoUnits, effectiveVideoUnits } from "@/lib/operations";
 
 const roleFor = (t) => (t === "poster" ? "designer" : t === "shoot" ? "shooter" : "editor");
+const durationLabel = (seconds) => {
+  const total = Math.max(0, Number(seconds) || 0);
+  if (!total) return "";
+  const minutes = Math.floor(total / 60);
+  const remainder = total % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+};
+const videoUnitsFromMinutes = (minutes) => effectiveVideoUnits({ duration_seconds: Number(minutes) * 60 });
+const staffUnitsFromMinutes = (minutes) => effectiveStaffVideoUnits({ duration_seconds: Number(minutes) * 60 });
 
 const DUE_COLORS = {
   over:  { bg: "#FDECEC", fg: "#B42318" },
@@ -158,6 +168,11 @@ function Card({ v, roles, myId, myClientId, editorName, subName, onAction }) {
         </span>
       </div>
       <div className="card-title">{v.title}</div>
+      {v.item_type === "video" && v.duration_seconds > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 7 }}>
+        <span className="tag" style={{ background: "#EEF2FF", color: "#4338CA" }}>⏱ {durationLabel(v.duration_seconds)}</span>
+        <span className="tag" style={{ background: "#ECFDF3", color: "#027A48" }}>{effectiveVideoUnits(v)} client unit{effectiveVideoUnits(v) === 1 ? "" : "s"}</span>
+        <span className="tag" style={{ background: "#FFF7ED", color: "#C2410C" }}>{effectiveStaffVideoUnits(v)} staff unit{effectiveStaffVideoUnits(v) === 1 ? "" : "s"}</span>
+      </div>}
       {subName && <div style={{ fontSize: 11.5, fontWeight: 600, color: "#5B47FB", marginBottom: 6 }}>👤 {subName}</div>}
       {v.stage === "to_edit" && v.brief && <div className="brief">📋 {v.brief}</div>}
       <div className="pipe">
@@ -240,17 +255,20 @@ function NewItem({ clients, people, close }) {
   const [editorId, setEditorId] = useState("");
   const [brief, setBrief] = useState("");
   const [due, setDue] = useState("");
+  const [durationMinutes, setDurationMinutes] = useState("");
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const roleForType = roleFor(type);
   const creators = people.filter((p) => (p.roles || []).includes(roleForType));
   async function save() {
     if (!title.trim()) return;
-    setBusy(true);
+    setBusy(true); setErr("");
     const fd = new FormData();
     fd.set("title", title.trim()); fd.set("item_type", type);
     fd.set("client_id", clientId); fd.set("editor_id", editorId);
     fd.set("brief", brief); fd.set("due_date", due);
-    await addVideo(fd); close();
+    fd.set("duration_seconds", type === "video" && durationMinutes ? String(Math.round(Number(durationMinutes) * 60)) : "");
+    try { await addVideo(fd); close(); } catch (e) { setErr(e.message); setBusy(false); }
   }
   return (
     <div>
@@ -272,6 +290,7 @@ function NewItem({ clients, people, close }) {
       </div>
       <label className="lbl">Title</label>
       <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. 3 foods that spike sugar" />
+      {type === "video" && <><label className="lbl">Finished video duration (minutes)</label><input className="input" type="number" min="0.1" step="0.1" value={durationMinutes} onChange={(e) => setDurationMinutes(e.target.value)} placeholder="e.g. 4.5" /><p className="hint">Client and staff units are calculated automatically. Admin can adjust them later.</p></>}
       <label className="lbl">Brief — what needs to be done</label>
       <textarea className="textarea" value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Notes for the editor/designer…" />
       <label className="lbl">Doctor / client</label>
@@ -284,6 +303,7 @@ function NewItem({ clients, people, close }) {
         {creators.length === 0 && <option value="" disabled>No {type === "poster" ? "designer" : type === "shoot" ? "videographer" : "video editor"} yet</option>}
         {creators.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
       </select>
+      {err && <p className="hint" style={{ color: "#B42318" }}>{err}</p>}
       <div className="mbtns">
         <button className="btn btn-ghost" onClick={close}>Cancel</button>
         <button className="cta" disabled={busy} onClick={save}>{busy ? "Adding…" : "Add to pipeline"}</button>
@@ -297,6 +317,7 @@ function EditItem({ v, clients, people, close }) {
     title: v.title || "", item_type: v.item_type || "video",
     due_date: v.due_date || "", brief: v.brief || "",
     client_id: v.client_id || "", editor_id: v.editor_id || "",
+    duration_minutes: v.duration_seconds ? String(Number(v.duration_seconds) / 60) : "",
   });
   const roleForType = roleFor(f.item_type);
   const creators = people.filter((p) => (p.roles || []).includes(roleForType));
@@ -309,6 +330,7 @@ function EditItem({ v, clients, people, close }) {
     const fd = new FormData();
     fd.set("id", v.id);
     Object.entries(f).forEach(([k, val]) => fd.set(k, val));
+    fd.set("duration_seconds", f.item_type === "video" && f.duration_minutes ? String(Math.round(Number(f.duration_minutes) * 60)) : "");
     try { await editVideo(fd); close(); } catch (e) { setErr(e.message); setBusy(false); }
   }
   return (
@@ -331,6 +353,7 @@ function EditItem({ v, clients, people, close }) {
       </div>
       <label className="lbl">Title</label>
       <input className="input" value={f.title} onChange={set("title")} />
+      {f.item_type === "video" && <><label className="lbl">Finished video duration (minutes)</label><input className="input" type="number" min="0.1" step="0.1" value={f.duration_minutes} onChange={set("duration_minutes")} /><p className="hint">Client units: {videoUnitsFromMinutes(f.duration_minutes)} · Staff units: {staffUnitsFromMinutes(f.duration_minutes)}</p></>}
       <label className="lbl">Brief</label>
       <textarea className="textarea" value={f.brief} onChange={set("brief")} />
       <label className="lbl">Doctor / client</label>
@@ -550,4 +573,3 @@ function TaskTimerPill() {
   );
 }
 const linkBtn = { background: "none", border: "none", color: "#5B47FB", fontWeight: 700, fontSize: 12, cursor: "pointer", marginLeft: 6 };
-
