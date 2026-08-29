@@ -150,15 +150,18 @@ export async function addVideo(form) {
   const { supabase, profile } = await me();
   if (!["super_admin", "admin", "editor", "designer", "shooter"].some((r) => has(profile.roles, r)))
     throw new Error("Not allowed");
-  await supabase.from("videos").insert({
+  const durationSeconds = Number(form.get("duration_seconds"));
+  const { error } = await supabase.from("videos").insert({
     title: form.get("title"),
     client_id: form.get("client_id") || null,
     editor_id: form.get("editor_id") || null,
     item_type: form.get("item_type") || "video",
     brief: form.get("brief") || "",
     due_date: form.get("due_date") || null,
+    duration_seconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? Math.round(durationSeconds) : null,
     stage: "to_edit",
   });
+  if (error) throw new Error("Unable to add this work item. Please try again.");
   revalidatePath("/dashboard");
 }
 
@@ -317,14 +320,17 @@ export async function editVideo(form) {
   const { data: v } = await supabase.from("videos").select("editor_id").eq("id", id).single();
   const allowed = admin_(profile.roles) || (v && v.editor_id === profile.id);
   if (!allowed) throw new Error("Only the assigned person or an admin can edit this item.");
-  await supabase.from("videos").update({
+  const durationSeconds = Number(form.get("duration_seconds"));
+  const { error } = await supabase.from("videos").update({
     title: form.get("title"),
     item_type: form.get("item_type") || "video",
     due_date: form.get("due_date") || null,
     brief: form.get("brief") || "",
     client_id: form.get("client_id") || null,
     editor_id: form.get("editor_id") || null,
+    duration_seconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? Math.round(durationSeconds) : null,
   }).eq("id", id);
+  if (error) throw new Error("Unable to save the video details. Please try again.");
   revalidatePath("/dashboard");
 }
 
@@ -433,4 +439,3 @@ export async function deletePartner(id) {
   await supabase.from("partners").delete().eq("id", id);
   revalidatePath("/accounts");
 }
-
