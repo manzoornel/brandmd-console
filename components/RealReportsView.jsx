@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import styles from "./ReportsDemo.module.css";
 import { rolesLabel } from "@/lib/roles";
+import { clientVideoCharge, effectiveStaffVideoUnits, effectiveVideoUnits } from "@/lib/operations";
 
 const ranges = {
   Today: 0,
@@ -14,7 +15,7 @@ const ranges = {
 const asDate = (value) => value ? new Date(value) : null;
 const hoursBetween = (start, end) => Math.max(0, (new Date(end) - new Date(start)) / 36e5);
 
-export default function RealReportsView({ people, videos, attendance, logs, clients }) {
+export default function RealReportsView({ people, videos, attendance, attendanceEvents, logs, clients }) {
   const [period, setPeriod] = useState("This month");
   const [role, setRole] = useState("All roles");
   const [query, setQuery] = useState("");
@@ -36,6 +37,8 @@ export default function RealReportsView({ people, videos, attendance, logs, clie
 
   const rows = useMemo(() => staff.map((p) => {
     const edited = videos.filter(v => v.editor_id === p.id && v.item_type === "video" && inRange(v.submitted_at)).length;
+    const editItems = videos.filter(v => v.editor_id === p.id && v.item_type === "video" && inRange(v.submitted_at));
+    const staffUnits = editItems.reduce((sum, v) => sum + effectiveStaffVideoUnits(v), 0);
     const shoots = videos.filter(v => v.editor_id === p.id && v.item_type === "shoot" && inRange(v.submitted_at)).length;
     const images = videos.filter(v => v.editor_id === p.id && v.item_type === "poster" && inRange(v.submitted_at)).length;
     const published = videos.filter(v => v.writer_id === p.id && inRange(v.posted_at));
@@ -43,21 +46,25 @@ export default function RealReportsView({ people, videos, attendance, logs, clie
     const ig = published.filter(v => v.instagram_url).length;
     const fb = published.filter(v => v.facebook_url).length;
     const personAttendance = attendance.filter(a => a.user_id === p.id && inRange(a.clock_in));
+    const verifiedClockIns = attendanceEvents.filter(a => a.user_id === p.id && a.event_type === "clock_in" && a.location_verified && inRange(a.occurred_at)).length;
     const hours = personAttendance.reduce((sum, a) => sum + hoursBetween(a.clock_in, a.clock_out || new Date()), 0);
     const activeSeconds = logs.filter(l => l.user_id === p.id && inRange(l.started_at)).reduce((sum, l) => sum + (l.seconds || 0), 0);
     const completed = videos.filter(v => (v.editor_id === p.id || v.writer_id === p.id) && inRange(v.posted_at));
     const turnaround = completed.length ? completed.reduce((sum, v) => sum + hoursBetween(v.created_at, v.posted_at) / 24, 0) / completed.length : 0;
     const rework = videos.filter(v => v.editor_id === p.id && v.rejection_note && (inRange(v.submitted_at) || inRange(v.posted_at))).length;
-    return { ...p, role: rolesLabel(p.roles || []), edited, shoots, images, yt, ig, fb, posts: yt + ig + fb, hours, activeSeconds, turnaround, rework };
-  }).filter(w => (role === "All roles" || w.role.includes(role)) && w.full_name.toLowerCase().includes(query.toLowerCase())), [staff, videos, attendance, logs, start, end, role, query]);
+    return { ...p, role: rolesLabel(p.roles || []), edited, staffUnits, shoots, images, yt, ig, fb, posts: yt + ig + fb, hours, verifiedClockIns, activeSeconds, turnaround, rework };
+  }).filter(w => (role === "All roles" || w.role.includes(role)) && w.full_name.toLowerCase().includes(query.toLowerCase())), [staff, videos, attendance, attendanceEvents, logs, start, end, role, query]);
 
   const doctors = useMemo(() => clients.map(c => {
     const items = videos.filter(v => v.client_id === c.id && inRange(v.posted_at));
     const video = items.filter(v => v.item_type === "video").length;
+    const videoItems = items.filter(v => v.item_type === "video");
+    const units = videoItems.reduce((sum, v) => sum + effectiveVideoUnits(v), 0);
+    const billed = videoItems.reduce((sum, v) => sum + clientVideoCharge(v, c), 0);
     const images = items.filter(v => v.item_type === "poster").length;
     const posts = items.reduce((n, v) => n + !!v.youtube_url + !!v.instagram_url + !!v.facebook_url, 0);
     const quota = (c.quota_videos || 0) + (c.quota_posters || 0);
-    return { name: c.name, video, images, posts, delivered: video + images, quota, used: quota ? Math.round((video + images) / quota * 100) : 0 };
+    return { name: c.name, video, units, billed, images, posts, delivered: video + images, quota, used: quota ? Math.round((video + images) / quota * 100) : 0 };
   }).filter(d => d.video || d.images || d.posts || d.quota), [clients, videos, start, end]);
 
   const total = key => rows.reduce((sum, row) => sum + row[key], 0);
@@ -77,8 +84,8 @@ export default function RealReportsView({ people, videos, attendance, logs, clie
     <div className={styles.tabs}>{["Overview","Workers","Doctors & quotas","Activity log"].map(t => <button key={t} onClick={() => setTab(t)} className={tab === t ? styles.tabActive : ""}>{t}</button>)}</div>
     <div className={styles.filters}><select value={period} onChange={e => setPeriod(e.target.value)}>{Object.keys(ranges).map(p => <option key={p}>{p}</option>)}</select><select value={role} onChange={e => setRole(e.target.value)}>{["All roles","Editor","Writer","Designer","Shooter","Admin"].map(r => <option key={r}>{r}</option>)}</select><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search worker…"/><span className={styles.updated}>● Live Supabase data</span></div>
     {tab === "Overview" && <><section className={styles.kpis}><Kpi icon="▶" color="violet" value={total("edited")} label="Videos edited"/><Kpi icon="●" color="amber" value={total("shoots")} label="Shoots completed"/><Kpi icon="↗" color="green" value={total("posts")} label="Platform posts"/><Kpi icon="◇" color="coral" value={total("images")} label="Posters / images"/></section><section className={styles.grid2}><div className={styles.panel}><Title title="Output by worker" sub="Completed workflow output in selected period"/>{rows.map(w => <Bar key={w.id} w={w} max={Math.max(1,...rows.map(x=>x.edited+x.shoots+x.images+x.posts))}/>)}</div><div className={styles.panel}><Title title="Publishing mix" sub="Each platform post is counted separately"/><Donut yt={total("yt")} ig={total("ig")} fb={total("fb")}/><div className={styles.legend}><span><i className={styles.yt}/>YouTube <b>{total("yt")}</b></span><span><i className={styles.ig}/>Instagram <b>{total("ig")}</b></span><span><i className={styles.fb}/>Facebook <b>{total("fb")}</b></span></div></div></section>{top && <section className={styles.insight}><span>★</span><div><b>{top.full_name} leads output for this period</b><p>Based on videos, shoots, posters and individual platform posts.</p></div><button onClick={()=>setTab("Workers")}>View worker report →</button></section>}</>}
-    {tab === "Workers" && <div className={styles.panel}><Title title="Worker performance" sub="Live output, time and current rework indicators"/><table><thead><tr><th>Worker</th><th>Role</th><th>Edits</th><th>Shoots</th><th>Posts</th><th>Images</th><th>Hours</th><th>Active</th><th>Rework*</th><th>Avg. turnaround</th></tr></thead><tbody>{rows.map(w=><tr key={w.id}><td><b>{w.full_name}</b></td><td>{w.role}</td><td>{w.edited}</td><td>{w.shoots}</td><td>{w.posts}</td><td>{w.images}</td><td>{w.hours.toFixed(1)}h</td><td>{(w.activeSeconds/3600).toFixed(1)}h</td><td>{w.rework}</td><td>{w.turnaround ? `${w.turnaround.toFixed(1)} days` : "—"}</td></tr>)}</tbody></table><p className="hint">* Existing database stores only the current rejection note. Full historical rework counts begin after the activity-event migration.</p></div>}
-    {tab === "Doctors & quotas" && <div className={styles.panel}><Title title="Doctor delivery & package fulfilment" sub="Published production compared with current package quotas"/><table><thead><tr><th>Doctor/client</th><th>Videos</th><th>Posters</th><th>Platform posts</th><th>Delivered</th><th>Quota</th><th>Used</th></tr></thead><tbody>{doctors.map(d=><tr key={d.name}><td><b>{d.name}</b></td><td>{d.video}</td><td>{d.images}</td><td>{d.posts}</td><td>{d.delivered}</td><td>{d.quota || "—"}</td><td><div className={styles.quota}><span style={{width:`${Math.min(d.used,100)}%`}}/></div><b>{d.quota ? `${d.used}%` : "—"}</b></td></tr>)}</tbody></table></div>}
+    {tab === "Workers" && <div className={styles.panel}><Title title="Worker performance" sub="Live output, attendance and staff incentive units"/><table><thead><tr><th>Worker</th><th>Role</th><th>Edits</th><th>Staff units</th><th>Shoots</th><th>Posts</th><th>Images</th><th>Verified days</th><th>Hours</th><th>Rework*</th><th>Avg. turnaround</th></tr></thead><tbody>{rows.map(w=><tr key={w.id}><td><b>{w.full_name}</b></td><td>{w.role}</td><td>{w.edited}</td><td><b>{w.staffUnits.toFixed(1)}</b></td><td>{w.shoots}</td><td>{w.posts}</td><td>{w.images}</td><td>{w.verifiedClockIns}</td><td>{w.hours.toFixed(1)}h</td><td>{w.rework}</td><td>{w.turnaround ? `${w.turnaround.toFixed(1)} days` : "—"}</td></tr>)}</tbody></table><p className="hint">* Staff units are calculated separately from client billing. Existing rejection history starts from the activity-event migration.</p></div>}
+    {tab === "Doctors & quotas" && <div className={styles.panel}><Title title="Doctor delivery, units & billing" sub="Published production compared with current package quotas; discounts are client-specific"/><table><thead><tr><th>Doctor/client</th><th>Videos</th><th>Billable units</th><th>Video value</th><th>Posters</th><th>Platform posts</th><th>Quota</th><th>Used</th></tr></thead><tbody>{doctors.map(d=><tr key={d.name}><td><b>{d.name}</b></td><td>{d.video}</td><td><b>{d.units}</b></td><td>₹{d.billed.toLocaleString("en-IN")}</td><td>{d.images}</td><td>{d.posts}</td><td>{d.quota || "—"}</td><td><div className={styles.quota}><span style={{width:`${Math.min(d.used,100)}%`}}/></div><b>{d.quota ? `${d.used}%` : "—"}</b></td></tr>)}</tbody></table></div>}
     {tab === "Activity log" && <div className={styles.panel}><Title title="Current-data activity timeline" sub="Derived from submitted and published timestamps"/><div className={styles.timeline}>{events.map((e,i)=><div className={styles.event} key={`${e.at}-${i}`}><span className={styles.eventDot}/><time>{new Date(e.at).toLocaleString()}</time><b>{e.user}</b><strong>{e.action}</strong><p>{e.client} · {e.title}</p><em>Recorded</em></div>)}</div></div>}
   </div>;
 }
@@ -87,4 +94,3 @@ function Kpi({icon,color,value,label}){return <div className={styles.kpi}><span 
 function Title({title,sub}){return <div className={styles.panelTitle}><div><h2>{title}</h2><p>{sub}</p></div></div>}
 function Bar({w,max}){const n=w.edited+w.shoots+w.images+w.posts;return <div className={styles.workerBar}><span className={styles.avatar}>{w.full_name[0]}</span><div className={styles.workerInfo}><div><b>{w.full_name}</b><small>{w.role}</small><strong>{n}</strong></div><div className={styles.bar}><span style={{width:`${n/max*100}%`}}/></div><p>{w.edited} edits · {w.shoots} shoots · {w.posts} posts · {w.images} images</p></div></div>}
 function Donut({yt,ig,fb}){const total=Math.max(yt+ig+fb,1),a=yt/total*360,b=(yt+ig)/total*360;return <div className={styles.donut} style={{background:`conic-gradient(#ff5d5d 0 ${a}deg,#6c4ff8 ${a}deg ${b}deg,#2f80ed ${b}deg 360deg)`}}><div><b>{yt+ig+fb}</b><span>Total posts</span></div></div>}
-
