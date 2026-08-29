@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import styles from "./ReportsDemo.module.css";
 import { rolesLabel } from "@/lib/roles";
-import { clientVideoCharge, effectiveStaffVideoUnits, effectiveVideoUnits } from "@/lib/operations";
+import { clientVideoCharge, compensationBreakdown, effectiveStaffVideoUnits, effectiveVideoUnits, workingDaysInMonth } from "@/lib/operations";
 
 const ranges = {
   Today: 0,
@@ -15,7 +15,7 @@ const ranges = {
 const asDate = (value) => value ? new Date(value) : null;
 const hoursBetween = (start, end) => Math.max(0, (new Date(end) - new Date(start)) / 36e5);
 
-export default function RealReportsView({ people, videos, attendance, attendanceEvents, logs, clients }) {
+export default function RealReportsView({ people, videos, attendance, attendanceEvents, logs, clients, compensationRules, sundayCredits }) {
   const [period, setPeriod] = useState("This month");
   const [role, setRole] = useState("All roles");
   const [query, setQuery] = useState("");
@@ -67,6 +67,36 @@ export default function RealReportsView({ people, videos, attendance, attendance
     return { name: c.name, video, units, billed, images, posts, delivered: video + images, quota, used: quota ? Math.round((video + images) / quota * 100) : 0 };
   }).filter(d => d.video || d.images || d.posts || d.quota), [clients, videos, start, end]);
 
+  const payroll = useMemo(() => staff.map((p) => {
+    const saved = compensationRules.find(r => r.user_id === p.id);
+    const name = p.full_name.toLowerCase();
+    const fallback = name.includes("mufeed") ? {
+      base_salary: 20000, monthly_video_unit_target: 50, video_unit_bonus_threshold: 50,
+      extra_video_unit_rate: 400,
+    } : name.includes("shamil") ? {
+      base_salary: 10000, monthly_post_target: 50, post_bonus_threshold: 60,
+      missing_post_deduction: 100, extra_post_rate: 100, monthly_creative_target: 20,
+      missing_creative_deduction: 200, extra_creative_rate: 200, video_edit_rate: 300,
+    } : null;
+    const rule = saved || fallback;
+    if (!rule) return null;
+    const monthVideos = videos.filter(v => v.editor_id === p.id && v.item_type === "video" && inRange(v.submitted_at));
+    const videoUnits = monthVideos.reduce((sum, v) => sum + effectiveStaffVideoUnits(v), 0);
+    const postingPackages = videos.filter(v => v.writer_id === p.id && inRange(v.posted_at)).length;
+    const creatives = videos.filter(v => v.editor_id === p.id && v.item_type === "poster" && inRange(v.submitted_at)).length;
+    const approvedSunday = sundayCredits.filter(c => c.user_id === p.id && ["approved","paid"].includes(c.status) && inRange(c.duty_date));
+    const breakdown = compensationBreakdown(rule, {
+      workingDays: workingDaysInMonth(start.getFullYear(), start.getMonth()),
+      unpaidDays: 0,
+      posts: postingPackages,
+      creatives,
+      videoUnits,
+      videoEdits: 0,
+      sundayCompensation: approvedSunday.filter(c => c.status === "paid").reduce((sum, c) => sum + Number(c.paid_amount || 0), 0),
+    });
+    return { ...p, rule, videoUnits, postingPackages, creatives, approvedSunday: approvedSunday.length, breakdown, saved: !!saved };
+  }).filter(Boolean), [staff, compensationRules, sundayCredits, videos, start, end]);
+
   const total = key => rows.reduce((sum, row) => sum + row[key], 0);
   const top = [...rows].sort((a,b) => (b.edited+b.shoots+b.images+b.posts) - (a.edited+a.shoots+a.images+a.posts))[0];
   const events = useMemo(() => videos.flatMap(v => {
@@ -81,11 +111,12 @@ export default function RealReportsView({ people, videos, attendance, attendance
 
   return <div className="body">
     <div className={styles.heading}><div><p className={styles.eyebrow}>OPERATIONS INTELLIGENCE</p><h1>Team reports</h1><p>Live production, publishing and attendance data from BrandMD.</p></div><button className={styles.export} onClick={() => window.print()}>⇩ Print report</button></div>
-    <div className={styles.tabs}>{["Overview","Workers","Doctors & quotas","Activity log"].map(t => <button key={t} onClick={() => setTab(t)} className={tab === t ? styles.tabActive : ""}>{t}</button>)}</div>
+    <div className={styles.tabs}>{["Overview","Workers","Doctors & quotas","Salary & incentives","Activity log"].map(t => <button key={t} onClick={() => setTab(t)} className={tab === t ? styles.tabActive : ""}>{t}</button>)}</div>
     <div className={styles.filters}><select value={period} onChange={e => setPeriod(e.target.value)}>{Object.keys(ranges).map(p => <option key={p}>{p}</option>)}</select><select value={role} onChange={e => setRole(e.target.value)}>{["All roles","Editor","Writer","Designer","Shooter","Admin"].map(r => <option key={r}>{r}</option>)}</select><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search worker…"/><span className={styles.updated}>● Live Supabase data</span></div>
     {tab === "Overview" && <><section className={styles.kpis}><Kpi icon="▶" color="violet" value={total("edited")} label="Videos edited"/><Kpi icon="●" color="amber" value={total("shoots")} label="Shoots completed"/><Kpi icon="↗" color="green" value={total("posts")} label="Platform posts"/><Kpi icon="◇" color="coral" value={total("images")} label="Posters / images"/></section><section className={styles.grid2}><div className={styles.panel}><Title title="Output by worker" sub="Completed workflow output in selected period"/>{rows.map(w => <Bar key={w.id} w={w} max={Math.max(1,...rows.map(x=>x.edited+x.shoots+x.images+x.posts))}/>)}</div><div className={styles.panel}><Title title="Publishing mix" sub="Each platform post is counted separately"/><Donut yt={total("yt")} ig={total("ig")} fb={total("fb")}/><div className={styles.legend}><span><i className={styles.yt}/>YouTube <b>{total("yt")}</b></span><span><i className={styles.ig}/>Instagram <b>{total("ig")}</b></span><span><i className={styles.fb}/>Facebook <b>{total("fb")}</b></span></div></div></section>{top && <section className={styles.insight}><span>★</span><div><b>{top.full_name} leads output for this period</b><p>Based on videos, shoots, posters and individual platform posts.</p></div><button onClick={()=>setTab("Workers")}>View worker report →</button></section>}</>}
     {tab === "Workers" && <div className={styles.panel}><Title title="Worker performance" sub="Live output, attendance and staff incentive units"/><table><thead><tr><th>Worker</th><th>Role</th><th>Edits</th><th>Staff units</th><th>Shoots</th><th>Posts</th><th>Images</th><th>Verified days</th><th>Hours</th><th>Rework*</th><th>Avg. turnaround</th></tr></thead><tbody>{rows.map(w=><tr key={w.id}><td><b>{w.full_name}</b></td><td>{w.role}</td><td>{w.edited}</td><td><b>{w.staffUnits.toFixed(1)}</b></td><td>{w.shoots}</td><td>{w.posts}</td><td>{w.images}</td><td>{w.verifiedClockIns}</td><td>{w.hours.toFixed(1)}h</td><td>{w.rework}</td><td>{w.turnaround ? `${w.turnaround.toFixed(1)} days` : "—"}</td></tr>)}</tbody></table><p className="hint">* Staff units are calculated separately from client billing. Existing rejection history starts from the activity-event migration.</p></div>}
     {tab === "Doctors & quotas" && <div className={styles.panel}><Title title="Doctor delivery, units & billing" sub="Published production compared with current package quotas; discounts are client-specific"/><table><thead><tr><th>Doctor/client</th><th>Videos</th><th>Billable units</th><th>Video value</th><th>Posters</th><th>Platform posts</th><th>Quota</th><th>Used</th></tr></thead><tbody>{doctors.map(d=><tr key={d.name}><td><b>{d.name}</b></td><td>{d.video}</td><td><b>{d.units}</b></td><td>₹{d.billed.toLocaleString("en-IN")}</td><td>{d.images}</td><td>{d.posts}</td><td>{d.quota || "—"}</td><td><div className={styles.quota}><span style={{width:`${Math.min(d.used,100)}%`}}/></div><b>{d.quota ? `${d.used}%` : "—"}</b></td></tr>)}</tbody></table></div>}
+    {tab === "Salary & incentives" && <div className={styles.panel}><Title title="Salary & incentive preview" sub="Live output-based calculation. Attendance deduction stays at ₹0 until attendance records are verified and approved."/><table><thead><tr><th>Staff</th><th>Base salary</th><th>Video units</th><th>Posting packages</th><th>Creatives</th><th>Incentives</th><th>Deductions</th><th>Estimated payable</th><th>Status</th></tr></thead><tbody>{payroll.map(p=><tr key={p.id}><td><b>{p.full_name}</b><br/><small>{p.saved ? "Saved rule" : "BrandMD approved default"}</small></td><td>₹{p.breakdown.base.toLocaleString("en-IN")}</td><td>{p.videoUnits.toFixed(1)}</td><td>{p.postingPackages}</td><td>{p.creatives}</td><td><b style={{color:"#15803d"}}>+₹{p.breakdown.incentives.toLocaleString("en-IN")}</b></td><td><b style={{color:"#b91c1c"}}>−₹{p.breakdown.deductions.toLocaleString("en-IN")}</b></td><td><b>₹{Math.round(p.breakdown.payable).toLocaleString("en-IN")}</b></td><td>{p.breakdown.warnings.length ? p.breakdown.warnings.join(" · ") : "On target"}{p.approvedSunday ? ` · ${p.approvedSunday} Sunday credit` : ""}</td></tr>)}</tbody></table><p className="hint">Legacy videos without a saved duration count as 1 staff unit. New videos use the approved duration-based unit rule. Final payroll requires admin approval.</p></div>}
     {tab === "Activity log" && <div className={styles.panel}><Title title="Current-data activity timeline" sub="Derived from submitted and published timestamps"/><div className={styles.timeline}>{events.map((e,i)=><div className={styles.event} key={`${e.at}-${i}`}><span className={styles.eventDot}/><time>{new Date(e.at).toLocaleString()}</time><b>{e.user}</b><strong>{e.action}</strong><p>{e.client} · {e.title}</p><em>Recorded</em></div>)}</div></div>}
   </div>;
 }
