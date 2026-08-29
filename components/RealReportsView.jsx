@@ -15,14 +15,14 @@ const ranges = {
 const asDate = (value) => value ? new Date(value) : null;
 const hoursBetween = (start, end) => Math.max(0, (new Date(end) - new Date(start)) / 36e5);
 
-export default function RealReportsView({ people, videos, attendance, attendanceEvents, logs, clients, compensationRules, sundayCredits }) {
+export default function RealReportsView({ generatedAt, people, videos, attendance, attendanceEvents, logs, clients, compensationRules, sundayCredits }) {
   const [period, setPeriod] = useState("This month");
   const [role, setRole] = useState("All roles");
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("Overview");
 
   const { start, end } = useMemo(() => {
-    const now = new Date();
+    const now = new Date(generatedAt);
     const end = new Date(now);
     let start = new Date(now);
     if (period === "Today") start.setHours(0, 0, 0, 0);
@@ -30,7 +30,7 @@ export default function RealReportsView({ people, videos, attendance, attendance
     else if (period === "This month") start = new Date(now.getFullYear(), now.getMonth(), 1);
     else { start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - ranges[period]); }
     return { start, end };
-  }, [period]);
+  }, [period, generatedAt]);
 
   const inRange = (value) => { const d = asDate(value); return d && d >= start && d <= end; };
   const staff = useMemo(() => people.filter(p => p.active !== false && !(p.roles || []).includes("client")), [people]);
@@ -47,7 +47,7 @@ export default function RealReportsView({ people, videos, attendance, attendance
     const fb = published.filter(v => v.facebook_url).length;
     const personAttendance = attendance.filter(a => a.user_id === p.id && inRange(a.clock_in));
     const verifiedClockIns = attendanceEvents.filter(a => a.user_id === p.id && a.event_type === "clock_in" && a.location_verified && inRange(a.occurred_at)).length;
-    const hours = personAttendance.reduce((sum, a) => sum + hoursBetween(a.clock_in, a.clock_out || new Date()), 0);
+    const hours = personAttendance.reduce((sum, a) => sum + hoursBetween(a.clock_in, a.clock_out || end), 0);
     const activeSeconds = logs.filter(l => l.user_id === p.id && inRange(l.started_at)).reduce((sum, l) => sum + (l.seconds || 0), 0);
     const completed = videos.filter(v => (v.editor_id === p.id || v.writer_id === p.id) && inRange(v.posted_at));
     const turnaround = completed.length ? completed.reduce((sum, v) => sum + hoursBetween(v.created_at, v.posted_at) / 24, 0) / completed.length : 0;
