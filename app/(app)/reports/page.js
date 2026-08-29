@@ -19,5 +19,5 @@ export default async function ReportsPage() {
     supabase.from("staff_compensation_rules").select("*"),
     supabase.from("sunday_duty_credits").select("*"),
   ]);
-  return <RealReportsView people={people || []} videos={videos || []} attendance={attendance || []} attendanceEvents={attendanceEvents || []} logs={logs || []} clients={clients || []} compensationRules={compensationRules || []} sundayCredits={sundayCredits || []} />;
+  return <RealReportsView generatedAt={new Date().toISOString()} people={people || []} videos={videos || []} attendance={attendance || []} attendanceEvents={attendanceEvents || []} logs={logs || []} clients={clients || []} compensationRules={compensationRules || []} sundayCredits={sundayCredits || []} />;
 }
