@@ -29,11 +29,23 @@ export async function loginWithPassword(email, password) {
 }
 
 /* ---------------- Attendance ---------------- */
-export async function clockIn() {
+const earthDistanceM = (aLat, aLng, bLat, bLng) => {
+  const rad = n => n * Math.PI / 180, r = 6371000;
+  const dLat = rad(bLat - aLat), dLng = rad(bLng - aLng);
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * r * Math.asin(Math.sqrt(x));
+};
+export async function clockIn(context = {}) {
   const { supabase, user } = await me();
+  const { data: office } = await supabase.from("office_settings").select("latitude, longitude, radius_m, minimum_gps_accuracy_m").eq("id", true).maybeSingle();
+  const hasLocation = Number.isFinite(Number(context.latitude)) && Number.isFinite(Number(context.longitude));
+  const distance = hasLocation && office ? earthDistanceM(Number(context.latitude), Number(context.longitude), office.latitude, office.longitude) : null;
+  const verified = distance != null && distance <= Number(office.radius_m) && Number(context.accuracy_m || 9999) <= Number(office.minimum_gps_accuracy_m || 50);
+  const location_status = !hasLocation ? "Location unavailable" : verified ? "BrandMD Office" : "Outside office";
   const { data: open } = await supabase
     .from("attendance").select("id").eq("user_id", user.id).is("clock_out", null).limit(1);
-  if (!open || open.length === 0) await supabase.from("attendance").insert({ user_id: user.id });
+  if (!open || open.length === 0) await supabase.from("attendance").insert({ user_id: user.id, device_type: String(context.device_type || "Unknown"), device_label: String(context.device_label || "Unknown device"), location_status, distance_m: distance });
+  await supabase.from("attendance_events").insert({ user_id: user.id, event_type: "clock_in", latitude: hasLocation ? Number(context.latitude) : null, longitude: hasLocation ? Number(context.longitude) : null, accuracy_m: Number(context.accuracy_m) || null, distance_m: distance, location_verified: verified, source: String(context.device_type || "web"), note: String(context.device_label || "") });
 }
 export async function clockOut(auto = false) {
   const { supabase, user } = await me();
