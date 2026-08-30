@@ -12,7 +12,7 @@ export default async function DashboardPage() {
     supabase.from("videos").select("*").order("created_at", { ascending: false }),
     supabase.from("clients").select("id, name, type, parent_id, is_firm, posting_plan_mode, monthly_video_target, weekly_video_target, preferred_weekday, quota_videos"),
     supabase.from("profiles").select("id, full_name, roles"),
-    supabase.from("attendance").select("user_id, clock_in, clock_out, work_date"),
+    supabase.from("attendance").select("user_id, clock_in, clock_out, work_date, device_type, device_label, location_status, distance_m"),
     supabase.from("task_time_logs").select("user_id, seconds, started_at"),
   ]);
   return (
