@@ -112,6 +112,10 @@ export async function addClient(form) {
     self_approver: form.get("self_approver") === "on",
     parent_id: form.get("parent_id") || null,
     is_firm: form.get("is_firm") === "on",
+    posting_plan_mode: form.get("posting_plan_mode") || "monthly",
+    monthly_video_target: Number(form.get("monthly_video_target")) || pk.quota_videos || 0,
+    weekly_video_target: Number(form.get("weekly_video_target")) || 0,
+    preferred_weekday: Number(form.get("preferred_weekday")) || 2,
   });
   revalidatePath("/doctors"); revalidatePath("/dashboard");
 }
@@ -134,6 +138,10 @@ export async function editClient(form) {
     self_approver: form.get("self_approver") === "on",
     parent_id: form.get("parent_id") || null,
     is_firm: form.get("is_firm") === "on",
+    posting_plan_mode: form.get("posting_plan_mode") || "monthly",
+    monthly_video_target: Number(form.get("monthly_video_target")) || pk.quota_videos || 0,
+    weekly_video_target: Number(form.get("weekly_video_target")) || 0,
+    preferred_weekday: Number(form.get("preferred_weekday")) || 2,
   }).eq("id", id);
   revalidatePath("/doctors"); revalidatePath("/dashboard");
 }
@@ -203,13 +211,15 @@ const previousWorkingDays = (date, count) => {
   return next;
 };
 
-function postingDates(startValue, count, mode, weekday) {
+function postingDates(startValue, count, mode, weekday, weeklyTarget = 1) {
   const start = nextWorkingDay(atNoonUtc(startValue));
   if (mode === "weekly") {
     const target = Number(weekday);
-    let first = new Date(start);
-    while (first.getUTCDay() !== target || first.getUTCDay() === 0) first = addDays(first, 1);
-    return Array.from({ length: count }, (_, i) => addDays(first, i * 7));
+    const perWeek = Math.max(1, Math.min(6, Number(weeklyTarget) || 1));
+    const days = Array.from({ length: perWeek }, (_, i) => ((target - 1 + Math.round(i * 6 / perWeek)) % 6) + 1).sort((a,b) => a-b);
+    const out = []; let cursor = new Date(start);
+    while (out.length < count) { if (days.includes(cursor.getUTCDay())) out.push(new Date(cursor)); cursor = addDays(cursor, 1); }
+    return out;
   }
   const candidates = [];
   let cursor = new Date(start);
@@ -233,19 +243,33 @@ export async function createShootingPlan(form) {
   const topics = String(form.get("topics") || "").split(/\r?\n/)
     .map(v => v.replace(/^\s*\d+[.)-]?\s*/, "").trim()).filter(Boolean).slice(0, 60);
   if (!topics.length) throw new Error("Add at least one topic heading.");
-  const clientId = form.get("client_id") || null;
-  if (!clientId) throw new Error("Choose a doctor/client.");
+  const clientId = form.get("brand_client_id") || form.get("client_id") || null;
+  const presenterClientId = form.get("presenter_client_id") || null;
+  if (!clientId) throw new Error("Choose a publishing brand/clinic.");
   const shootDate = String(form.get("shoot_date") || dateOnly(new Date()));
   const firstPostDate = String(form.get("first_post_date") || shootDate);
-  const mode = String(form.get("schedule_mode") || (topics.length >= 20 ? "daily" : "spread"));
-  const dates = postingDates(firstPostDate, topics.length, mode, form.get("weekday") || 2);
+  const { data: brand } = await supabase.from("clients").select("posting_plan_mode, monthly_video_target, weekly_video_target, preferred_weekday").eq("id", clientId).single();
+  const requestedMode = String(form.get("schedule_mode") || "auto");
+  const mode = requestedMode === "auto" ? (brand?.posting_plan_mode === "daily" ? "daily" : brand?.posting_plan_mode === "weekly" ? "weekly" : "spread") : requestedMode;
+  const weekday = requestedMode === "auto" ? (brand?.preferred_weekday || 2) : (form.get("weekday") || 2);
+  const { data: existing } = await supabase.from("videos").select("scheduled_post_date").eq("client_id", clientId).not("scheduled_post_date", "is", null).gte("scheduled_post_date", firstPostDate);
+  const occupied = new Set((existing || []).map(v => v.scheduled_post_date));
+  const weeklyTarget = requestedMode === "auto" ? (brand?.weekly_video_target || 1) : 1;
+  const initialDates = postingDates(firstPostDate, topics.length + occupied.size + 14, mode, weekday, weeklyTarget);
+  const dates = [];
+  for (const candidate of initialDates) {
+    const key = dateOnly(candidate);
+    if (!occupied.has(key)) dates.push(candidate);
+    if (dates.length === topics.length) break;
+  }
+  if (dates.length < topics.length) throw new Error("Not enough free schedule dates were found. Move the first posting date forward.");
   const editLeadDays = Math.max(1, Math.min(10, Number(form.get("edit_lead_days")) || 2));
   const editors = String(form.get("editor_ids") || "").split(",").filter(Boolean);
   const batchId = crypto.randomUUID();
   const items = topics.map((title, index) => {
     const postDate = dates[index];
     return {
-      title, item_type: "video", client_id: clientId,
+      title, item_type: "video", client_id: clientId, presenter_client_id: presenterClientId,
       editor_id: editors.length ? editors[Math.floor(index / 2) % editors.length] : null,
       brief: `Shot on ${shootDate} · Topic ${index + 1}/${topics.length}`,
       shoot_date: shootDate, scheduled_post_date: dateOnly(postDate),
