@@ -113,7 +113,7 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
                         <div className="dgroup-body">
                           {arr.map((v) => (
                             <Card key={v.id} v={v} roles={roles} myId={myId} myClientId={myClientId}
-                              editorName={nameOf(v.editor_id)} subName={subNameOf(v)}
+                              editorName={nameOf(v.editor_id)} subName={subNameOf(v)} presenterName={v.presenter_client_id ? clientOf(v.presenter_client_id) : null}
                               onAction={(type) => setModal({ type, video: v })} />
                           ))}
                         </div>
@@ -146,7 +146,7 @@ function TypeBadge({ type }) {
   return <span className="tag" style={{ background: m.bg, color: m.fg, fontSize: 10 }}>{m.label}</span>;
 }
 
-function Card({ v, roles, myId, myClientId, editorName, subName, onAction }) {
+function Card({ v, roles, myId, myClientId, editorName, subName, presenterName, onAction }) {
   const sm = stageMeta(v.stage);
   const idx = STAGE_INDEX[v.stage];
   const total = (v.yt_views || 0) + (v.ig_views || 0) + (v.fb_views || 0);
@@ -178,6 +178,7 @@ function Card({ v, roles, myId, myClientId, editorName, subName, onAction }) {
         <span className="tag" style={{ background: v.schedule_status === "approved" ? "#ECFDF3" : "#FFF7ED", color: v.schedule_status === "approved" ? "#027A48" : "#C2410C" }}>{v.schedule_status === "approved" ? "Schedule approved" : "Awaiting schedule approval"}</span>
       </div>}
       {subName && <div style={{ fontSize: 11.5, fontWeight: 600, color: "#5B47FB", marginBottom: 6 }}>👤 {subName}</div>}
+      {presenterName && <div style={{ fontSize: 11.5, fontWeight: 600, color: "#0F766E", marginBottom: 6 }}>🎙 Presenter: {presenterName}</div>}
       {v.stage === "to_edit" && v.brief && <div className="brief">📋 {v.brief}</div>}
       <div className="pipe">
         {STAGES.map((s, i) => (
@@ -260,6 +261,11 @@ function NewItem({ clients, people, close }) {
   const [title, setTitle] = useState("");
   const [type, setType] = useState("video");
   const [clientId, setClientId] = useState(clients[0]?.id || "");
+  const brands = clients.filter(c => c.is_firm || !c.parent_id);
+  const [brandId, setBrandId] = useState(brands[0]?.id || clients[0]?.id || "");
+  const presenters = clients.filter(c => c.id === brandId || c.parent_id === brandId);
+  const [presenterId, setPresenterId] = useState("");
+  const activeBrand = clients.find(c => c.id === brandId);
   const [editorId, setEditorId] = useState("");
   const [brief, setBrief] = useState("");
   const [due, setDue] = useState("");
@@ -267,7 +273,7 @@ function NewItem({ clients, people, close }) {
   const [topics, setTopics] = useState("");
   const [shootDate, setShootDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [firstPostDate, setFirstPostDate] = useState("");
-  const [scheduleMode, setScheduleMode] = useState("spread");
+  const [scheduleMode, setScheduleMode] = useState("auto");
   const [weekday, setWeekday] = useState("2");
   const [editLeadDays, setEditLeadDays] = useState("2");
   const [editorIds, setEditorIds] = useState([]);
@@ -280,7 +286,7 @@ function NewItem({ clients, people, close }) {
       if (!topics.trim()) return setErr("Type one topic heading per line.");
       setBusy(true); setErr("");
       const fd = new FormData();
-      fd.set("client_id", clientId); fd.set("topics", topics); fd.set("shoot_date", shootDate);
+      fd.set("brand_client_id", brandId); fd.set("presenter_client_id", presenterId); fd.set("topics", topics); fd.set("shoot_date", shootDate);
       fd.set("first_post_date", firstPostDate || shootDate); fd.set("schedule_mode", scheduleMode);
       fd.set("weekday", weekday); fd.set("edit_lead_days", editLeadDays); fd.set("editor_ids", editorIds.join(","));
       try { await createShootingPlan(fd); close(); } catch (e) { setErr(e.message); setBusy(false); }
@@ -314,13 +320,16 @@ function NewItem({ clients, people, close }) {
         </div>
       </div>
       {type === "shoot" ? <>
-        <label className="lbl">Doctor / client</label>
-        <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)}>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+        <label className="lbl">Publishing brand / clinic</label>
+        <select className="input" value={brandId} onChange={(e) => { setBrandId(e.target.value); setPresenterId(""); }}>{brands.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+        {activeBrand && <p className="hint">Saved aim: {activeBrand.posting_plan_mode === "daily" ? "one video every working day" : activeBrand.posting_plan_mode === "weekly" ? `${activeBrand.weekly_video_target || 1} video(s) weekly` : `${activeBrand.monthly_video_target || activeBrand.quota_videos || 0} video(s) monthly`}.</p>}
+        <label className="lbl">Doctor / presenter in this video</label>
+        <select className="input" value={presenterId} onChange={(e) => setPresenterId(e.target.value)}><option value="">— Not specified / institution video —</option>{presenters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
         <label className="lbl">Topic headings — one video per line</label>
         <textarea className="textarea" style={{ minHeight: 150 }} value={topics} onChange={(e) => setTopics(e.target.value)} placeholder={"Diabetes in pregnancy\nFoods that raise sugar\nWhen to check HbA1c"} />
         <p className="hint">Each line automatically becomes a separate Video To‑Do item.</p>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 160 }}><label className="lbl">Posting pattern</label><select className="input" value={scheduleMode} onChange={(e) => setScheduleMode(e.target.value)}><option value="spread">Spread across month</option><option value="daily">One every working day</option><option value="weekly">Same weekday weekly</option></select></div>
+          <div style={{ flex: 1, minWidth: 160 }}><label className="lbl">Posting pattern</label><select className="input" value={scheduleMode} onChange={(e) => setScheduleMode(e.target.value)}><option value="auto">Use saved clinic/doctor aim</option><option value="spread">Spread across month</option><option value="daily">One every working day</option><option value="weekly">Same weekday weekly</option></select></div>
           <div style={{ flex: 1, minWidth: 160 }}><label className="lbl">First posting date</label><input className="input" type="date" value={firstPostDate} min={shootDate} onChange={(e) => setFirstPostDate(e.target.value)} /></div>
         </div>
         {scheduleMode === "weekly" && <><label className="lbl">Posting weekday</label><select className="input" value={weekday} onChange={(e) => setWeekday(e.target.value)}><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></>}
