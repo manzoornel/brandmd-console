@@ -32,6 +32,11 @@ alter table clients add column if not exists video_unit_price numeric(12,2) not 
 alter table clients add column if not exists video_discount_percent numeric(5,2) not null default 0
   check (video_discount_percent between 0 and 100);
 
+alter table attendance add column if not exists device_type text;
+alter table attendance add column if not exists device_label text;
+alter table attendance add column if not exists location_status text;
+alter table attendance add column if not exists distance_m double precision;
+
 create table if not exists office_settings (
   id boolean primary key default true check (id),
   office_name text not null default 'BrandMD Office',
