@@ -102,6 +102,11 @@ export default function DoctorActions({ client, packages = [], firms = [] }) {
             <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 13.5, color: "#475569" }}>
               <input type="checkbox" name="self_approver" defaultChecked={c.self_approver} /> This doctor approves their own content
             </label>
+            <div style={{ background: "#F8FAFF", border: "1px solid #DDE3FF", borderRadius: 10, padding: "12px 14px", marginTop: 14 }}>
+              <b style={{ fontSize: 13 }}>Automatic video posting aim</b>
+              <label className="lbl">Plan</label><select className="input" name="posting_plan_mode" defaultValue={c.posting_plan_mode || "monthly"}><option value="daily">One video every working day</option><option value="weekly">Fixed videos every week</option><option value="monthly">Fixed videos every month</option></select>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><div style={{ flex: 1 }}><label className="lbl">Monthly target</label><input className="input" name="monthly_video_target" type="number" min="0" defaultValue={c.monthly_video_target || c.quota_videos || 0}/></div><div style={{ flex: 1 }}><label className="lbl">Weekly target</label><input className="input" name="weekly_video_target" type="number" min="0" defaultValue={c.weekly_video_target || 0}/></div><div style={{ flex: 1 }}><label className="lbl">Preferred weekday</label><select className="input" name="preferred_weekday" defaultValue={c.preferred_weekday || 2}><option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option></select></div></div>
+            </div>
             {err && <p className="hint" style={{ color: "#B42318" }}>{err}</p>}
             <div className="mbtns">
               <button type="button" className="btn btn-ghost" onClick={() => setMode(null)}>Cancel</button>
