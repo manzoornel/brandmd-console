@@ -193,6 +193,84 @@ export async function approveVideo(videoId) {
   revalidatePath("/dashboard");
 }
 
+const dateOnly = (date) => date.toISOString().slice(0, 10);
+const atNoonUtc = (value) => new Date(`${value}T12:00:00Z`);
+const addDays = (date, days) => { const next = new Date(date); next.setUTCDate(next.getUTCDate() + days); return next; };
+const nextWorkingDay = (date) => { let next = new Date(date); while (next.getUTCDay() === 0) next = addDays(next, 1); return next; };
+const previousWorkingDays = (date, count) => {
+  let next = new Date(date); let left = count;
+  while (left > 0) { next = addDays(next, -1); if (next.getUTCDay() !== 0) left -= 1; }
+  return next;
+};
+
+function postingDates(startValue, count, mode, weekday) {
+  const start = nextWorkingDay(atNoonUtc(startValue));
+  if (mode === "weekly") {
+    const target = Number(weekday);
+    let first = new Date(start);
+    while (first.getUTCDay() !== target || first.getUTCDay() === 0) first = addDays(first, 1);
+    return Array.from({ length: count }, (_, i) => addDays(first, i * 7));
+  }
+  const candidates = [];
+  let cursor = new Date(start);
+  const horizon = mode === "spread" ? Math.max(31, count * 4) : count * 2 + 10;
+  for (let i = 0; candidates.length < Math.max(count, 30) && i < horizon + 120; i += 1) {
+    if (cursor.getUTCDay() !== 0) candidates.push(new Date(cursor));
+    cursor = addDays(cursor, 1);
+  }
+  if (mode !== "spread" || count <= 1) return candidates.slice(0, count);
+  const monthEnd = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0, 12));
+  const monthCandidates = candidates.filter(d => d <= monthEnd);
+  if (monthCandidates.length >= count) {
+    return Array.from({ length: count }, (_, i) => monthCandidates[Math.round(i * (monthCandidates.length - 1) / Math.max(1, count - 1))]);
+  }
+  return candidates.slice(0, count);
+}
+
+export async function createShootingPlan(form) {
+  const { supabase, profile } = await me();
+  if (!["super_admin", "admin", "editor", "shooter"].some((r) => has(profile.roles, r))) throw new Error("Not allowed");
+  const topics = String(form.get("topics") || "").split(/\r?\n/)
+    .map(v => v.replace(/^\s*\d+[.)-]?\s*/, "").trim()).filter(Boolean).slice(0, 60);
+  if (!topics.length) throw new Error("Add at least one topic heading.");
+  const clientId = form.get("client_id") || null;
+  if (!clientId) throw new Error("Choose a doctor/client.");
+  const shootDate = String(form.get("shoot_date") || dateOnly(new Date()));
+  const firstPostDate = String(form.get("first_post_date") || shootDate);
+  const mode = String(form.get("schedule_mode") || (topics.length >= 20 ? "daily" : "spread"));
+  const dates = postingDates(firstPostDate, topics.length, mode, form.get("weekday") || 2);
+  const editLeadDays = Math.max(1, Math.min(10, Number(form.get("edit_lead_days")) || 2));
+  const editors = String(form.get("editor_ids") || "").split(",").filter(Boolean);
+  const batchId = crypto.randomUUID();
+  const items = topics.map((title, index) => {
+    const postDate = dates[index];
+    return {
+      title, item_type: "video", client_id: clientId,
+      editor_id: editors.length ? editors[Math.floor(index / 2) % editors.length] : null,
+      brief: `Shot on ${shootDate} · Topic ${index + 1}/${topics.length}`,
+      shoot_date: shootDate, scheduled_post_date: dateOnly(postDate),
+      due_date: dateOnly(previousWorkingDays(postDate, editLeadDays)),
+      edit_lead_days: editLeadDays, schedule_status: "draft",
+      shooting_batch_id: batchId, topic_order: index + 1, stage: "to_edit",
+    };
+  });
+  const { error } = await supabase.from("videos").insert(items);
+  if (error) throw new Error("Unable to create the shooting plan. Please try again.");
+  revalidatePath("/dashboard");
+}
+
+export async function approveSchedule(videoId) {
+  const { supabase, profile } = await me();
+  const { data: video } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  const allowed = admin_(profile.roles) || (has(profile.roles, "client") && profile.client_id === video?.client_id);
+  if (!allowed) throw new Error("Not allowed to approve this schedule.");
+  const { error } = await supabase.from("videos").update({
+    schedule_status: "approved", schedule_approved_at: new Date().toISOString(), schedule_approved_by: profile.id,
+  }).eq("id", videoId);
+  if (error) throw new Error("Schedule approval could not be saved.");
+  revalidatePath("/dashboard");
+}
+
 export async function rejectVideo(videoId, note) {
   const { supabase, profile } = await me();
   const { data: v, error: loadError } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
