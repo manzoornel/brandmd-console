@@ -15,12 +15,37 @@ async function me() {
 const has = (roles, r) => Array.isArray(roles) && roles.includes(r);
 const admin_ = (roles) => has(roles, "super_admin") || has(roles, "admin");
 
+export async function loginWithPassword(email, password) {
+  try {
+    const supabase = createClient();
+    const { error } = await supabase.auth.signInWithPassword({
+      email: String(email || "").trim(),
+      password: String(password || ""),
+    });
+    return { error: error?.message || null };
+  } catch (_) {
+    return { error: "Unable to reach the sign-in service. Please try again." };
+  }
+}
+
 /* ---------------- Attendance ---------------- */
-export async function clockIn() {
+const earthDistanceM = (aLat, aLng, bLat, bLng) => {
+  const rad = n => n * Math.PI / 180, r = 6371000;
+  const dLat = rad(bLat - aLat), dLng = rad(bLng - aLng);
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * r * Math.asin(Math.sqrt(x));
+};
+export async function clockIn(context = {}) {
   const { supabase, user } = await me();
+  const { data: office } = await supabase.from("office_settings").select("latitude, longitude, radius_m, minimum_gps_accuracy_m").eq("id", true).maybeSingle();
+  const hasLocation = Number.isFinite(Number(context.latitude)) && Number.isFinite(Number(context.longitude));
+  const distance = hasLocation && office ? earthDistanceM(Number(context.latitude), Number(context.longitude), office.latitude, office.longitude) : null;
+  const verified = distance != null && distance <= Number(office.radius_m) && Number(context.accuracy_m || 9999) <= Number(office.minimum_gps_accuracy_m || 50);
+  const location_status = !hasLocation ? "Location unavailable" : verified ? "BrandMD Office" : "Outside office";
   const { data: open } = await supabase
     .from("attendance").select("id").eq("user_id", user.id).is("clock_out", null).limit(1);
-  if (!open || open.length === 0) await supabase.from("attendance").insert({ user_id: user.id });
+  if (!open || open.length === 0) await supabase.from("attendance").insert({ user_id: user.id, device_type: String(context.device_type || "Unknown"), device_label: String(context.device_label || "Unknown device"), location_status, distance_m: distance });
+  await supabase.from("attendance_events").insert({ user_id: user.id, event_type: "clock_in", latitude: hasLocation ? Number(context.latitude) : null, longitude: hasLocation ? Number(context.longitude) : null, accuracy_m: Number(context.accuracy_m) || null, distance_m: distance, location_verified: verified, source: String(context.device_type || "web"), note: String(context.device_label || "") });
 }
 export async function clockOut(auto = false) {
   const { supabase, user } = await me();
@@ -99,6 +124,10 @@ export async function addClient(form) {
     self_approver: form.get("self_approver") === "on",
     parent_id: form.get("parent_id") || null,
     is_firm: form.get("is_firm") === "on",
+    posting_plan_mode: form.get("posting_plan_mode") || "monthly",
+    monthly_video_target: Number(form.get("monthly_video_target")) || pk.quota_videos || 0,
+    weekly_video_target: Number(form.get("weekly_video_target")) || 0,
+    preferred_weekday: Number(form.get("preferred_weekday")) || 2,
   });
   revalidatePath("/doctors"); revalidatePath("/dashboard");
 }
@@ -121,6 +150,10 @@ export async function editClient(form) {
     self_approver: form.get("self_approver") === "on",
     parent_id: form.get("parent_id") || null,
     is_firm: form.get("is_firm") === "on",
+    posting_plan_mode: form.get("posting_plan_mode") || "monthly",
+    monthly_video_target: Number(form.get("monthly_video_target")) || pk.quota_videos || 0,
+    weekly_video_target: Number(form.get("weekly_video_target")) || 0,
+    preferred_weekday: Number(form.get("preferred_weekday")) || 2,
   }).eq("id", id);
   revalidatePath("/doctors"); revalidatePath("/dashboard");
 }
@@ -137,15 +170,18 @@ export async function addVideo(form) {
   const { supabase, profile } = await me();
   if (!["super_admin", "admin", "editor", "designer", "shooter"].some((r) => has(profile.roles, r)))
     throw new Error("Not allowed");
-  await supabase.from("videos").insert({
+  const durationSeconds = Number(form.get("duration_seconds"));
+  const { error } = await supabase.from("videos").insert({
     title: form.get("title"),
     client_id: form.get("client_id") || null,
     editor_id: form.get("editor_id") || null,
     item_type: form.get("item_type") || "video",
     brief: form.get("brief") || "",
     due_date: form.get("due_date") || null,
+    duration_seconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? Math.round(durationSeconds) : null,
     stage: "to_edit",
   });
+  if (error) throw new Error("Unable to add this work item. Please try again.");
   revalidatePath("/dashboard");
 }
 
@@ -165,24 +201,122 @@ export async function submitDrive(videoId, link) {
 
 export async function approveVideo(videoId) {
   const { supabase, profile } = await me();
-  const { data: v } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  const { data: v, error: loadError } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  if (loadError) throw new Error("Unable to load this item. Please refresh and try again.");
   const isClientApprover = has(profile.roles, "client") && profile.client_id && v?.client_id === profile.client_id;
   if (!admin_(profile.roles) && !isClientApprover) throw new Error("Not allowed to approve");
-  await supabase.from("videos").update({
+  const { error } = await supabase.from("videos").update({
     stage: "content", approver_id: profile.id,
     approved_at: new Date().toISOString(), rejection_note: "",
   }).eq("id", videoId);
+  if (error) throw new Error("Approval could not be saved. Please try again.");
+  revalidatePath("/dashboard");
+}
+
+const dateOnly = (date) => date.toISOString().slice(0, 10);
+const atNoonUtc = (value) => new Date(`${value}T12:00:00Z`);
+const addDays = (date, days) => { const next = new Date(date); next.setUTCDate(next.getUTCDate() + days); return next; };
+const nextWorkingDay = (date) => { let next = new Date(date); while (next.getUTCDay() === 0) next = addDays(next, 1); return next; };
+const previousWorkingDays = (date, count) => {
+  let next = new Date(date); let left = count;
+  while (left > 0) { next = addDays(next, -1); if (next.getUTCDay() !== 0) left -= 1; }
+  return next;
+};
+
+function postingDates(startValue, count, mode, weekday, weeklyTarget = 1) {
+  const start = nextWorkingDay(atNoonUtc(startValue));
+  if (mode === "weekly") {
+    const target = Number(weekday);
+    const perWeek = Math.max(1, Math.min(6, Number(weeklyTarget) || 1));
+    const days = Array.from({ length: perWeek }, (_, i) => ((target - 1 + Math.round(i * 6 / perWeek)) % 6) + 1).sort((a,b) => a-b);
+    const out = []; let cursor = new Date(start);
+    while (out.length < count) { if (days.includes(cursor.getUTCDay())) out.push(new Date(cursor)); cursor = addDays(cursor, 1); }
+    return out;
+  }
+  const candidates = [];
+  let cursor = new Date(start);
+  const horizon = mode === "spread" ? Math.max(31, count * 4) : count * 2 + 10;
+  for (let i = 0; candidates.length < Math.max(count, 30) && i < horizon + 120; i += 1) {
+    if (cursor.getUTCDay() !== 0) candidates.push(new Date(cursor));
+    cursor = addDays(cursor, 1);
+  }
+  if (mode !== "spread" || count <= 1) return candidates.slice(0, count);
+  const monthEnd = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0, 12));
+  const monthCandidates = candidates.filter(d => d <= monthEnd);
+  if (monthCandidates.length >= count) {
+    return Array.from({ length: count }, (_, i) => monthCandidates[Math.round(i * (monthCandidates.length - 1) / Math.max(1, count - 1))]);
+  }
+  return candidates.slice(0, count);
+}
+
+export async function createShootingPlan(form) {
+  const { supabase, profile } = await me();
+  if (!["super_admin", "admin", "editor", "shooter"].some((r) => has(profile.roles, r))) throw new Error("Not allowed");
+  const topics = String(form.get("topics") || "").split(/\r?\n/)
+    .map(v => v.replace(/^\s*\d+[.)-]?\s*/, "").trim()).filter(Boolean).slice(0, 60);
+  if (!topics.length) throw new Error("Add at least one topic heading.");
+  const clientId = form.get("brand_client_id") || form.get("client_id") || null;
+  const presenterClientId = form.get("presenter_client_id") || null;
+  if (!clientId) throw new Error("Choose a publishing brand/clinic.");
+  const shootDate = String(form.get("shoot_date") || dateOnly(new Date()));
+  const firstPostDate = String(form.get("first_post_date") || shootDate);
+  const { data: brand } = await supabase.from("clients").select("posting_plan_mode, monthly_video_target, weekly_video_target, preferred_weekday").eq("id", clientId).single();
+  const requestedMode = String(form.get("schedule_mode") || "auto");
+  const mode = requestedMode === "auto" ? (brand?.posting_plan_mode === "daily" ? "daily" : brand?.posting_plan_mode === "weekly" ? "weekly" : "spread") : requestedMode;
+  const weekday = requestedMode === "auto" ? (brand?.preferred_weekday || 2) : (form.get("weekday") || 2);
+  const { data: existing } = await supabase.from("videos").select("scheduled_post_date").eq("client_id", clientId).not("scheduled_post_date", "is", null).gte("scheduled_post_date", firstPostDate);
+  const occupied = new Set((existing || []).map(v => v.scheduled_post_date));
+  const weeklyTarget = requestedMode === "auto" ? (brand?.weekly_video_target || 1) : 1;
+  const initialDates = postingDates(firstPostDate, topics.length + occupied.size + 14, mode, weekday, weeklyTarget);
+  const dates = [];
+  for (const candidate of initialDates) {
+    const key = dateOnly(candidate);
+    if (!occupied.has(key)) dates.push(candidate);
+    if (dates.length === topics.length) break;
+  }
+  if (dates.length < topics.length) throw new Error("Not enough free schedule dates were found. Move the first posting date forward.");
+  const editLeadDays = Math.max(1, Math.min(10, Number(form.get("edit_lead_days")) || 2));
+  const editors = String(form.get("editor_ids") || "").split(",").filter(Boolean);
+  const batchId = crypto.randomUUID();
+  const items = topics.map((title, index) => {
+    const postDate = dates[index];
+    return {
+      title, item_type: "video", client_id: clientId, presenter_client_id: presenterClientId,
+      editor_id: editors.length ? editors[Math.floor(index / 2) % editors.length] : null,
+      brief: `Shot on ${shootDate} · Topic ${index + 1}/${topics.length}`,
+      shoot_date: shootDate, scheduled_post_date: dateOnly(postDate),
+      due_date: dateOnly(previousWorkingDays(postDate, editLeadDays)),
+      edit_lead_days: editLeadDays, schedule_status: "draft",
+      shooting_batch_id: batchId, topic_order: index + 1, stage: "to_edit",
+    };
+  });
+  const { error } = await supabase.from("videos").insert(items);
+  if (error) throw new Error("Unable to create the shooting plan. Please try again.");
+  revalidatePath("/dashboard");
+}
+
+export async function approveSchedule(videoId) {
+  const { supabase, profile } = await me();
+  const { data: video } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  const allowed = admin_(profile.roles) || (has(profile.roles, "client") && profile.client_id === video?.client_id);
+  if (!allowed) throw new Error("Not allowed to approve this schedule.");
+  const { error } = await supabase.from("videos").update({
+    schedule_status: "approved", schedule_approved_at: new Date().toISOString(), schedule_approved_by: profile.id,
+  }).eq("id", videoId);
+  if (error) throw new Error("Schedule approval could not be saved.");
   revalidatePath("/dashboard");
 }
 
 export async function rejectVideo(videoId, note) {
   const { supabase, profile } = await me();
-  const { data: v } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  const { data: v, error: loadError } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
+  if (loadError) throw new Error("Unable to load this item. Please refresh and try again.");
   const isClientApprover = has(profile.roles, "client") && profile.client_id && v?.client_id === profile.client_id;
   if (!admin_(profile.roles) && !isClientApprover) throw new Error("Not allowed");
-  await supabase.from("videos").update({
+  const { error } = await supabase.from("videos").update({
     stage: "to_edit", rejection_note: note || "Needs changes", submitted_at: null,
   }).eq("id", videoId);
+  if (error) throw new Error("The review decision could not be saved. Please try again.");
   revalidatePath("/dashboard");
 }
 
@@ -300,14 +434,17 @@ export async function editVideo(form) {
   const { data: v } = await supabase.from("videos").select("editor_id").eq("id", id).single();
   const allowed = admin_(profile.roles) || (v && v.editor_id === profile.id);
   if (!allowed) throw new Error("Only the assigned person or an admin can edit this item.");
-  await supabase.from("videos").update({
+  const durationSeconds = Number(form.get("duration_seconds"));
+  const { error } = await supabase.from("videos").update({
     title: form.get("title"),
     item_type: form.get("item_type") || "video",
     due_date: form.get("due_date") || null,
     brief: form.get("brief") || "",
     client_id: form.get("client_id") || null,
     editor_id: form.get("editor_id") || null,
+    duration_seconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? Math.round(durationSeconds) : null,
   }).eq("id", id);
+  if (error) throw new Error("Unable to save the video details. Please try again.");
   revalidatePath("/dashboard");
 }
 

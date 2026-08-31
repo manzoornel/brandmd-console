@@ -33,6 +33,12 @@ export default function AddClientForm({ packages = [], firms = [] }) {
           </select>
         </div>
       </div>
+      <div style={{ background: "#F8FAFF", border: "1px solid #DDE3FF", borderRadius: 10, padding: "12px 14px", marginTop: 14 }}>
+        <b style={{ fontSize: 13 }}>Automatic video posting aim</b>
+        <label className="lbl">Plan</label>
+        <select className="input" name="posting_plan_mode" defaultValue="monthly"><option value="daily">One video every working day</option><option value="weekly">Fixed videos every week</option><option value="monthly">Fixed videos every month</option></select>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><div style={{ flex: 1 }}><label className="lbl">Monthly target</label><input className="input" name="monthly_video_target" type="number" min="0" defaultValue="0" /></div><div style={{ flex: 1 }}><label className="lbl">Weekly target</label><input className="input" name="weekly_video_target" type="number" min="0" defaultValue="0" /></div><div style={{ flex: 1 }}><label className="lbl">Preferred weekday</label><select className="input" name="preferred_weekday" defaultValue="2"><option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option></select></div></div>
+      </div>
       {usingPkg ? (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 150 }}>

@@ -5,12 +5,22 @@ import { STAGES, STAGE_INDEX, stageMeta, ITEM_TYPES } from "@/lib/stages";
 import { isAdmin, hasRole } from "@/lib/roles";
 import { fmt, dueInfo, shortDate } from "@/lib/format";
 import {
-  addVideo, editVideo, deleteVideo, submitDrive, approveVideo, rejectVideo,
+  addVideo, createShootingPlan, approveSchedule, editVideo, deleteVideo, submitDrive, approveVideo, rejectVideo,
   savePost, markPosted, updateViews, startTask, refreshYouTubeViews,
 } from "@/app/actions";
 import { youTubeEmbed } from "@/lib/youtube";
+import { effectiveStaffVideoUnits, effectiveVideoUnits } from "@/lib/operations";
 
 const roleFor = (t) => (t === "poster" ? "designer" : t === "shoot" ? "shooter" : "editor");
+const durationLabel = (seconds) => {
+  const total = Math.max(0, Number(seconds) || 0);
+  if (!total) return "";
+  const minutes = Math.floor(total / 60);
+  const remainder = total % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+};
+const videoUnitsFromMinutes = (minutes) => effectiveVideoUnits({ duration_seconds: Number(minutes) * 60 });
+const staffUnitsFromMinutes = (minutes) => effectiveStaffVideoUnits({ duration_seconds: Number(minutes) * 60 });
 
 const DUE_COLORS = {
   over:  { bg: "#FDECEC", fg: "#B42318" },
@@ -103,7 +113,7 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
                         <div className="dgroup-body">
                           {arr.map((v) => (
                             <Card key={v.id} v={v} roles={roles} myId={myId} myClientId={myClientId}
-                              editorName={nameOf(v.editor_id)} subName={subNameOf(v)}
+                              editorName={nameOf(v.editor_id)} subName={subNameOf(v)} presenterName={v.presenter_client_id ? clientOf(v.presenter_client_id) : null}
                               onAction={(type) => setModal({ type, video: v })} />
                           ))}
                         </div>
@@ -136,7 +146,7 @@ function TypeBadge({ type }) {
   return <span className="tag" style={{ background: m.bg, color: m.fg, fontSize: 10 }}>{m.label}</span>;
 }
 
-function Card({ v, roles, myId, myClientId, editorName, subName, onAction }) {
+function Card({ v, roles, myId, myClientId, editorName, subName, presenterName, onAction }) {
   const sm = stageMeta(v.stage);
   const idx = STAGE_INDEX[v.stage];
   const total = (v.yt_views || 0) + (v.ig_views || 0) + (v.fb_views || 0);
@@ -158,7 +168,17 @@ function Card({ v, roles, myId, myClientId, editorName, subName, onAction }) {
         </span>
       </div>
       <div className="card-title">{v.title}</div>
+      {v.item_type === "video" && v.duration_seconds > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 7 }}>
+        <span className="tag" style={{ background: "#EEF2FF", color: "#4338CA" }}>⏱ {durationLabel(v.duration_seconds)}</span>
+        <span className="tag" style={{ background: "#ECFDF3", color: "#027A48" }}>{effectiveVideoUnits(v)} client unit{effectiveVideoUnits(v) === 1 ? "" : "s"}</span>
+        <span className="tag" style={{ background: "#FFF7ED", color: "#C2410C" }}>{effectiveStaffVideoUnits(v)} staff unit{effectiveStaffVideoUnits(v) === 1 ? "" : "s"}</span>
+      </div>}
+      {v.scheduled_post_date && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 7 }}>
+        <span className="tag" style={{ background: "#EEF2FF", color: "#4338CA" }}>Post: {shortDate(v.scheduled_post_date)}</span>
+        <span className="tag" style={{ background: v.schedule_status === "approved" ? "#ECFDF3" : "#FFF7ED", color: v.schedule_status === "approved" ? "#027A48" : "#C2410C" }}>{v.schedule_status === "approved" ? "Schedule approved" : "Awaiting schedule approval"}</span>
+      </div>}
       {subName && <div style={{ fontSize: 11.5, fontWeight: 600, color: "#5B47FB", marginBottom: 6 }}>👤 {subName}</div>}
+      {presenterName && <div style={{ fontSize: 11.5, fontWeight: 600, color: "#0F766E", marginBottom: 6 }}>🎙 Presenter: {presenterName}</div>}
       {v.stage === "to_edit" && v.brief && <div className="brief">📋 {v.brief}</div>}
       <div className="pipe">
         {STAGES.map((s, i) => (
@@ -190,6 +210,9 @@ function cardAction(v, roles, myId, myClientId) {
   const roleForType = roleFor(v.item_type);
   const canCreatorAct = (isAdmin(roles) || hasRole(roles, roleForType)) &&
     (isAdmin(roles) || !v.editor_id || v.editor_id === myId);
+  if (v.stage === "to_edit" && v.scheduled_post_date && v.schedule_status === "draft") {
+    return adminOrClient ? { type: "schedule_approve", label: "Approve posting schedule" } : null;
+  }
   if (v.stage === "to_edit" && canCreatorAct)
     return { type: "submit", label: v.item_type === "poster" ? "Add file & submit" : v.item_type === "shoot" ? "Submit shoot" : "Add Drive link & submit" };
   if (v.stage === "review" && adminOrClient) return { type: "review", label: "Review" };
@@ -213,6 +236,7 @@ function Modal({ children, onClose }) {
 function ActionPanel({ modal, roles, clients, people, close }) {
   const { type, video } = modal;
   if (type === "new") return <NewItem clients={clients} people={people} close={close} />;
+  if (type === "schedule_approve") return <ScheduleApproval v={video} close={close} />;
   if (type === "edit") return <EditItem v={video} clients={clients} people={people} close={close} />;
   if (type === "delete") return <DeleteItem v={video} close={close} />;
   if (type === "submit") return <SubmitDrive v={video} close={close} />;
@@ -237,20 +261,45 @@ function NewItem({ clients, people, close }) {
   const [title, setTitle] = useState("");
   const [type, setType] = useState("video");
   const [clientId, setClientId] = useState(clients[0]?.id || "");
+  const brands = clients.filter(c => c.is_firm || !c.parent_id);
+  const [brandId, setBrandId] = useState(brands[0]?.id || clients[0]?.id || "");
+  const presenters = clients.filter(c => c.id === brandId || c.parent_id === brandId);
+  const [presenterId, setPresenterId] = useState("");
+  const activeBrand = clients.find(c => c.id === brandId);
   const [editorId, setEditorId] = useState("");
   const [brief, setBrief] = useState("");
   const [due, setDue] = useState("");
+  const [durationMinutes, setDurationMinutes] = useState("");
+  const [topics, setTopics] = useState("");
+  const [shootDate, setShootDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [firstPostDate, setFirstPostDate] = useState("");
+  const [scheduleMode, setScheduleMode] = useState("auto");
+  const [weekday, setWeekday] = useState("2");
+  const [editLeadDays, setEditLeadDays] = useState("2");
+  const [editorIds, setEditorIds] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const roleForType = roleFor(type);
   const creators = people.filter((p) => (p.roles || []).includes(roleForType));
   async function save() {
+    if (type === "shoot") {
+      if (!topics.trim()) return setErr("Type one topic heading per line.");
+      setBusy(true); setErr("");
+      const fd = new FormData();
+      fd.set("brand_client_id", brandId); fd.set("presenter_client_id", presenterId); fd.set("topics", topics); fd.set("shoot_date", shootDate);
+      fd.set("first_post_date", firstPostDate || shootDate); fd.set("schedule_mode", scheduleMode);
+      fd.set("weekday", weekday); fd.set("edit_lead_days", editLeadDays); fd.set("editor_ids", editorIds.join(","));
+      try { await createShootingPlan(fd); close(); } catch (e) { setErr(e.message); setBusy(false); }
+      return;
+    }
     if (!title.trim()) return;
-    setBusy(true);
+    setBusy(true); setErr("");
     const fd = new FormData();
     fd.set("title", title.trim()); fd.set("item_type", type);
     fd.set("client_id", clientId); fd.set("editor_id", editorId);
     fd.set("brief", brief); fd.set("due_date", due);
-    await addVideo(fd); close();
+    fd.set("duration_seconds", type === "video" && durationMinutes ? String(Math.round(Number(durationMinutes) * 60)) : "");
+    try { await addVideo(fd); close(); } catch (e) { setErr(e.message); setBusy(false); }
   }
   return (
     <div>
@@ -267,11 +316,31 @@ function NewItem({ clients, people, close }) {
         </div>
         <div style={{ flex: 1, minWidth: 150 }}>
           <label className="lbl">{type === "shoot" ? "Shoot date" : "Due date"}</label>
-          <input className="input" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+          <input className="input" type="date" value={type === "shoot" ? shootDate : due} onChange={(e) => type === "shoot" ? setShootDate(e.target.value) : setDue(e.target.value)} />
         </div>
       </div>
+      {type === "shoot" ? <>
+        <label className="lbl">Publishing brand / clinic</label>
+        <select className="input" value={brandId} onChange={(e) => { setBrandId(e.target.value); setPresenterId(""); }}>{brands.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+        {activeBrand && <p className="hint">Saved aim: {activeBrand.posting_plan_mode === "daily" ? "one video every working day" : activeBrand.posting_plan_mode === "weekly" ? `${activeBrand.weekly_video_target || 1} video(s) weekly` : `${activeBrand.monthly_video_target || activeBrand.quota_videos || 0} video(s) monthly`}.</p>}
+        <label className="lbl">Doctor / presenter in this video</label>
+        <select className="input" value={presenterId} onChange={(e) => setPresenterId(e.target.value)}><option value="">— Not specified / institution video —</option>{presenters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+        <label className="lbl">Topic headings — one video per line</label>
+        <textarea className="textarea" style={{ minHeight: 150 }} value={topics} onChange={(e) => setTopics(e.target.value)} placeholder={"Diabetes in pregnancy\nFoods that raise sugar\nWhen to check HbA1c"} />
+        <p className="hint">Each line automatically becomes a separate Video To‑Do item.</p>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 160 }}><label className="lbl">Posting pattern</label><select className="input" value={scheduleMode} onChange={(e) => setScheduleMode(e.target.value)}><option value="auto">Use saved clinic/doctor aim</option><option value="spread">Spread across month</option><option value="daily">One every working day</option><option value="weekly">Same weekday weekly</option></select></div>
+          <div style={{ flex: 1, minWidth: 160 }}><label className="lbl">First posting date</label><input className="input" type="date" value={firstPostDate} min={shootDate} onChange={(e) => setFirstPostDate(e.target.value)} /></div>
+        </div>
+        {scheduleMode === "weekly" && <><label className="lbl">Posting weekday</label><select className="input" value={weekday} onChange={(e) => setWeekday(e.target.value)}><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></>}
+        <label className="lbl">Editing deadline before posting</label><select className="input" value={editLeadDays} onChange={(e) => setEditLeadDays(e.target.value)}><option value="1">1 working day before</option><option value="2">2 working days before</option><option value="3">3 working days before</option></select>
+        <label className="lbl">Video editors — select one or more</label>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 8 }}>{people.filter(p => (p.roles || []).includes("editor")).map(p => <label key={p.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={editorIds.includes(p.id)} onChange={(e) => setEditorIds(e.target.checked ? [...editorIds, p.id] : editorIds.filter(id => id !== p.id))}/>{p.full_name}</label>)}</div>
+        <p className="hint">Assignments rotate after every 2 videos. Sundays are always skipped. Doctor/admin approval is required before editing starts.</p>
+      </> : <>
       <label className="lbl">Title</label>
       <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. 3 foods that spike sugar" />
+      {type === "video" && <><label className="lbl">Finished video duration (minutes)</label><input className="input" type="number" min="0.1" step="0.1" value={durationMinutes} onChange={(e) => setDurationMinutes(e.target.value)} placeholder="e.g. 4.5" /><p className="hint">Client and staff units are calculated automatically. Admin can adjust them later.</p></>}
       <label className="lbl">Brief — what needs to be done</label>
       <textarea className="textarea" value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Notes for the editor/designer…" />
       <label className="lbl">Doctor / client</label>
@@ -284,12 +353,20 @@ function NewItem({ clients, people, close }) {
         {creators.length === 0 && <option value="" disabled>No {type === "poster" ? "designer" : type === "shoot" ? "videographer" : "video editor"} yet</option>}
         {creators.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
       </select>
+      </>}
+      {err && <p className="hint" style={{ color: "#B42318" }}>{err}</p>}
       <div className="mbtns">
         <button className="btn btn-ghost" onClick={close}>Cancel</button>
-        <button className="cta" disabled={busy} onClick={save}>{busy ? "Adding…" : "Add to pipeline"}</button>
+        <button className="cta" disabled={busy} onClick={save}>{busy ? "Creating…" : type === "shoot" ? "Create shooting plan" : "Add to pipeline"}</button>
       </div>
     </div>
   );
+}
+
+function ScheduleApproval({ v, close }) {
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
+  async function approve() { setBusy(true); setErr(""); try { await approveSchedule(v.id); close(); } catch (e) { setErr(e.message); setBusy(false); } }
+  return <div><PanelHead v={v} label="Posting schedule approval"/><p className="sub">Edit due: <b>{shortDate(v.due_date)}</b><br/>Scheduled post: <b>{shortDate(v.scheduled_post_date)}</b></p><p className="hint">Approval releases this item to the assigned video editor.</p>{err && <p className="hint" style={{color:"#B42318"}}>{err}</p>}<div className="mbtns"><button className="btn btn-ghost" onClick={close}>Not now</button><button className="cta" disabled={busy} onClick={approve}>{busy ? "Approving…" : "Approve schedule"}</button></div></div>;
 }
 
 function EditItem({ v, clients, people, close }) {
@@ -297,6 +374,7 @@ function EditItem({ v, clients, people, close }) {
     title: v.title || "", item_type: v.item_type || "video",
     due_date: v.due_date || "", brief: v.brief || "",
     client_id: v.client_id || "", editor_id: v.editor_id || "",
+    duration_minutes: v.duration_seconds ? String(Number(v.duration_seconds) / 60) : "",
   });
   const roleForType = roleFor(f.item_type);
   const creators = people.filter((p) => (p.roles || []).includes(roleForType));
@@ -309,6 +387,7 @@ function EditItem({ v, clients, people, close }) {
     const fd = new FormData();
     fd.set("id", v.id);
     Object.entries(f).forEach(([k, val]) => fd.set(k, val));
+    fd.set("duration_seconds", f.item_type === "video" && f.duration_minutes ? String(Math.round(Number(f.duration_minutes) * 60)) : "");
     try { await editVideo(fd); close(); } catch (e) { setErr(e.message); setBusy(false); }
   }
   return (
@@ -331,6 +410,7 @@ function EditItem({ v, clients, people, close }) {
       </div>
       <label className="lbl">Title</label>
       <input className="input" value={f.title} onChange={set("title")} />
+      {f.item_type === "video" && <><label className="lbl">Finished video duration (minutes)</label><input className="input" type="number" min="0.1" step="0.1" value={f.duration_minutes} onChange={set("duration_minutes")} /><p className="hint">Client units: {videoUnitsFromMinutes(f.duration_minutes)} · Staff units: {staffUnitsFromMinutes(f.duration_minutes)}</p></>}
       <label className="lbl">Brief</label>
       <textarea className="textarea" value={f.brief} onChange={set("brief")} />
       <label className="lbl">Doctor / client</label>
@@ -394,14 +474,26 @@ function SubmitDrive({ v, close }) {
 function Review({ v, close }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  async function ok() { setBusy(true); await approveVideo(v.id); close(); }
-  async function back() { setBusy(true); await rejectVideo(v.id, note.trim()); close(); }
+  const [err, setErr] = useState("");
+  async function decide(action) {
+    setErr(""); setBusy(true);
+    try {
+      await action();
+      close();
+    } catch (error) {
+      setErr(error?.message || "Unable to save this decision. Please try again.");
+      setBusy(false);
+    }
+  }
+  async function ok() { await decide(() => approveVideo(v.id)); }
+  async function back() { await decide(() => rejectVideo(v.id, note.trim())); }
   return (
     <div>
       <PanelHead v={v} label="Review" />
       {v.drive_link && <a className="drivebox" href={v.drive_link} target="_blank" rel="noreferrer">▶ Open the file ↗</a>}
       <label className="lbl">If sending back, say what to fix</label>
       <textarea className="textarea" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Trim the intro…" />
+      {err && <div style={{ marginTop: 10, padding: "9px 11px", borderRadius: 8, background: "#FDECEC", color: "#B42318", fontSize: 13 }}>{err}</div>}
       <div className="mbtns">
         <button className="btn btn-danger" disabled={busy} onClick={back}>Send back</button>
         <button className="cta" disabled={busy} onClick={ok}>Approve →</button>

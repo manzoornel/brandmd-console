@@ -1,26 +1,52 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
-import { clockIn } from "@/app/actions";
+import { clockIn, loginWithPassword } from "@/app/actions";
 import Logo from "@/components/Logo";
 
 export default function LoginPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
+  function loginContext() {
+    const ua = navigator.userAgent || "";
+    const device_type = /Android|iPhone|iPad|Mobile/i.test(ua) ? "Phone / tablet" : "Computer";
+    const os = /iPhone|iPad/i.test(ua) ? "iOS" : /Android/i.test(ua) ? "Android" : /Windows/i.test(ua) ? "Windows" : /Mac OS/i.test(ua) ? "macOS" : /Linux/i.test(ua) ? "Linux" : "Unknown OS";
+    const browser = /Edg\//i.test(ua) ? "Edge" : /Chrome\//i.test(ua) ? "Chrome" : /Firefox\//i.test(ua) ? "Firefox" : /Safari\//i.test(ua) ? "Safari" : "Web browser";
+    const base = { device_type, device_label: `${os} · ${browser}`, latitude: null, longitude: null, accuracy_m: null };
+    if (!navigator.geolocation) return Promise.resolve(base);
+    return new Promise(resolve => navigator.geolocation.getCurrentPosition(
+      p => resolve({ ...base, latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy_m: p.coords.accuracy }),
+      () => resolve(base), { enableHighAccuracy: true, timeout: 2500, maximumAge: 60000 }
+    ));
+  }
+
   async function submit() {
+    if (busy) return;
     setErr(""); setBusy(true);
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) { setErr(error.message); setBusy(false); return; }
-    clockIn().catch(() => {});
-    router.push("/dashboard");
-    router.refresh();
+
+    try {
+      const contextPromise = loginContext();
+      const timeout = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("Sign-in is taking too long. Please check your connection and try again.")), 15000);
+      });
+      const result = await Promise.race([
+        loginWithPassword(email, password),
+        timeout,
+      ]);
+
+      if (result?.error) throw new Error(result.error);
+
+      // Record device and office verification, but never let attendance block access.
+      const context = await contextPromise;
+      await Promise.race([clockIn(context), new Promise(resolve => setTimeout(resolve, 1800))]).catch(() => {});
+      window.location.replace("/dashboard");
+    } catch (error) {
+      setErr(error?.message || "Unable to sign in. Please try again.");
+      setBusy(false);
+    }
   }
 
   return (
