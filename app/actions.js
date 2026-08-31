@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { fetchYouTubeViews } from "@/lib/youtube";
+import { effectiveVideoUnits } from "@/lib/operations";
 
 async function me() {
   const supabase = createClient();
@@ -259,6 +260,18 @@ export async function createShootingPlan(form) {
   const presenterClientId = form.get("presenter_client_id") || null;
   if (!clientId) throw new Error("Choose a publishing brand/clinic.");
   const shootDate = String(form.get("shoot_date") || dateOnly(new Date()));
+  if (form.get("booking_only") === "1") {
+    const { data: client } = await supabase.from("clients").select("name").eq("id", clientId).single();
+    const { error } = await supabase.from("videos").insert({
+      title: `Shoot · ${client?.name || "Client"}`,
+      item_type: "shoot", client_id: clientId, presenter_client_id: presenterClientId,
+      editor_id: form.get("shooter_id") || null, shoot_date: shootDate, due_date: shootDate,
+      expected_topic_count: Math.max(1, Number(form.get("expected_topic_count")) || 1),
+      brief: form.get("brief") || "Capture topic headings during the shoot.", stage: "to_edit",
+    });
+    if (error) throw new Error("Unable to book this shoot. Please try again.");
+    revalidatePath("/dashboard"); return;
+  }
   const firstPostDate = String(form.get("first_post_date") || shootDate);
   const { data: brand } = await supabase.from("clients").select("posting_plan_mode, monthly_video_target, weekly_video_target, preferred_weekday").eq("id", clientId).single();
   const requestedMode = String(form.get("schedule_mode") || "auto");
@@ -282,6 +295,7 @@ export async function createShootingPlan(form) {
     const postDate = dates[index];
     return {
       title, item_type: "video", client_id: clientId, presenter_client_id: presenterClientId,
+      source_shoot_id: form.get("shoot_item_id") || null,
       editor_id: editors.length ? editors[Math.floor(index / 2) % editors.length] : null,
       brief: `Shot on ${shootDate} · Topic ${index + 1}/${topics.length}`,
       shoot_date: shootDate, scheduled_post_date: dateOnly(postDate),
@@ -292,6 +306,7 @@ export async function createShootingPlan(form) {
   });
   const { error } = await supabase.from("videos").insert(items);
   if (error) throw new Error("Unable to create the shooting plan. Please try again.");
+  if (form.get("shoot_item_id")) await supabase.from("videos").update({ stage: "published", submitted_at: new Date().toISOString(), posted_at: new Date().toISOString() }).eq("id", form.get("shoot_item_id"));
   revalidatePath("/dashboard");
 }
 
@@ -435,17 +450,51 @@ export async function editVideo(form) {
   const allowed = admin_(profile.roles) || (v && v.editor_id === profile.id);
   if (!allowed) throw new Error("Only the assigned person or an admin can edit this item.");
   const durationSeconds = Number(form.get("duration_seconds"));
+  const nextEditor = form.get("editor_id") || null;
+  const changedEditor = (v?.editor_id || null) !== nextEditor;
+  const transferReason = String(form.get("reassignment_reason") || "").trim();
+  if (changedEditor && v?.editor_id && !transferReason) throw new Error("Please enter a reason for transferring this task.");
   const { error } = await supabase.from("videos").update({
     title: form.get("title"),
     item_type: form.get("item_type") || "video",
     due_date: form.get("due_date") || null,
     brief: form.get("brief") || "",
     client_id: form.get("client_id") || null,
-    editor_id: form.get("editor_id") || null,
+    editor_id: nextEditor,
+    reassignment_reason: changedEditor ? transferReason : undefined,
+    reassigned_at: changedEditor ? new Date().toISOString() : undefined,
+    reassigned_by: changedEditor ? profile.id : undefined,
     duration_seconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? Math.round(durationSeconds) : null,
   }).eq("id", id);
   if (error) throw new Error("Unable to save the video details. Please try again.");
+  if (changedEditor) await supabase.from("assignment_transfers").insert({ video_id: id, from_user_id: v?.editor_id || null, to_user_id: nextEditor, reason: transferReason || "Initial assignment", transferred_by: profile.id });
   revalidatePath("/dashboard");
+}
+
+export async function generateMonthlyInvoices(periodValue) {
+  const { supabase, profile } = await me();
+  if (!admin_(profile.roles)) throw new Error("Not allowed");
+  const match = String(periodValue || "").match(/^(\d{4})-(\d{2})$/);
+  if (!match) throw new Error("Choose a valid month.");
+  const start = `${match[1]}-${match[2]}-01`;
+  const endDate = new Date(Date.UTC(Number(match[1]), Number(match[2]), 0));
+  const end = endDate.toISOString().slice(0, 10);
+  const [{ data: clients }, { data: videos }] = await Promise.all([
+    supabase.from("clients").select("id, name, video_unit_price, video_discount_percent"),
+    supabase.from("videos").select("id, title, client_id, duration_seconds, calculated_units, approved_units, item_type, submitted_at, posted_at").eq("item_type", "video").gte("submitted_at", `${start}T00:00:00Z`).lte("submitted_at", `${end}T23:59:59Z`),
+  ]);
+  for (const client of clients || []) {
+    const work = (videos || []).filter(v => v.client_id === client.id && v.duration_seconds);
+    if (!work.length) continue;
+    const rate = Number(client.video_unit_price || 1500), discountPct = Number(client.video_discount_percent || 0);
+    const subtotal = work.reduce((sum,v) => sum + effectiveVideoUnits(v) * rate, 0);
+    const discount = subtotal * discountPct / 100, total = subtotal - discount;
+    const { data: invoice, error } = await supabase.from("invoices").upsert({ client_id: client.id, period_start: start, period_end: end, subtotal, discount, total, generated_by: profile.id }, { onConflict: "client_id,period_start,period_end" }).select("id").single();
+    if (error) throw new Error("Invoice generation failed.");
+    await supabase.from("invoice_items").delete().eq("invoice_id", invoice.id);
+    await supabase.from("invoice_items").insert(work.map(v => ({ invoice_id: invoice.id, video_id: v.id, description: v.title, quantity: effectiveVideoUnits(v), unit_price: rate, amount: effectiveVideoUnits(v) * rate * (1 - discountPct / 100) })));
+  }
+  revalidatePath("/accounts");
 }
 
 /* ---------------- v3 Round 3B: packages catalog ---------------- */
