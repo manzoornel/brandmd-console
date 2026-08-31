@@ -3,6 +3,7 @@ import { createClient, getProfile } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/roles";
 import { shortDate, dueInfo } from "@/lib/format";
 import AccountActions from "@/components/AccountActions";
+import MonthlyInvoices from "@/components/MonthlyInvoices";
 import {
   AddExpenseForm, DeleteExpenseButton,
   AddAssetForm, DeleteAssetButton,
@@ -16,12 +17,13 @@ export default async function AccountsPage() {
   const profile = await getProfile();
   if (!isAdmin(profile.roles)) redirect("/dashboard");
   const supabase = createClient();
-  const [{ data: clients }, { data: payments }, { data: expenses }, { data: assets }, { data: partners }] = await Promise.all([
+  const [{ data: clients }, { data: payments }, { data: expenses }, { data: assets }, { data: partners }, { data: invoices }] = await Promise.all([
     supabase.from("clients").select("*").order("created_at"),
     supabase.from("payments").select("client_id, amount, paid_at, note, method").order("paid_at", { ascending: false }),
     supabase.from("expenses").select("*").order("spent_at", { ascending: false }),
     supabase.from("assets").select("*").order("acquired_at", { ascending: false }),
     supabase.from("partners").select("*").order("created_at"),
+    supabase.from("invoices").select("*").order("period_start", { ascending: false }),
   ]);
 
   const billed = (clients || []).filter((c) => Number(c.price) > 0);
@@ -86,6 +88,8 @@ export default async function AccountsPage() {
           </tbody>
         </table>
       </section>
+
+      <MonthlyInvoices invoices={invoices || []} clients={clients || []} payments={payments || []} />
 
       {/* expenses */}
       <section className="acct-sec">
