@@ -42,6 +42,7 @@ function DueBadge({ due, small }) {
 
 export default function Board({ roles, myId, myClientId, videos, clients, people }) {
   const [filter, setFilter] = useState("all");
+  const [workScope, setWorkScope] = useState(isAdmin(roles) ? "all" : "mine");
   const [modal, setModal] = useState(null);
   const [open, setOpen] = useState({}); // user toggles for doctor groups
   const nameOf = (id) => people.find((p) => p.id === id)?.full_name || "—";
@@ -52,8 +53,8 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
   const dueVal = (v) => (v.due_date ? new Date(v.due_date).getTime() : Infinity);
 
   const shown = useMemo(
-    () => (filter === "all" ? videos : videos.filter((v) => v.client_id === filter)),
-    [videos, filter]
+    () => (filter === "all" ? videos : videos.filter((v) => v.client_id === filter)).filter(v => workScope === "all" || v.editor_id === myId || (v.stage === "content" && hasRole(roles, "writer"))),
+    [videos, filter, workScope, myId, roles]
   );
   const canCreate = isAdmin(roles) || hasRole(roles, "editor") || hasRole(roles, "designer");
 
@@ -68,6 +69,7 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
           <p className="sub">Grouped by doctor. Click a doctor to open their items.</p>
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <select className="input" style={{ width: "auto" }} value={workScope} onChange={(e) => setWorkScope(e.target.value)}><option value="mine">My work</option>{isAdmin(roles) && <option value="all">All team work</option>}</select>
           <select className="input" style={{ width: "auto" }} value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="all">All doctors</option>
             {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -213,6 +215,8 @@ function cardAction(v, roles, myId, myClientId) {
   if (v.stage === "to_edit" && v.scheduled_post_date && v.schedule_status === "draft") {
     return adminOrClient ? { type: "schedule_approve", label: "Approve posting schedule" } : null;
   }
+  if (v.item_type === "shoot" && v.stage === "to_edit" && canCreatorAct)
+    return { type: "capture_shoot", label: "Capture topics from shoot" };
   if (v.stage === "to_edit" && canCreatorAct)
     return { type: "submit", label: v.item_type === "poster" ? "Add file & submit" : v.item_type === "shoot" ? "Submit shoot" : "Add Drive link & submit" };
   if (v.stage === "review" && adminOrClient) return { type: "review", label: "Review" };
@@ -237,6 +241,7 @@ function ActionPanel({ modal, roles, clients, people, close }) {
   const { type, video } = modal;
   if (type === "new") return <NewItem clients={clients} people={people} close={close} />;
   if (type === "schedule_approve") return <ScheduleApproval v={video} close={close} />;
+  if (type === "capture_shoot") return <CaptureShoot v={video} clients={clients} people={people} close={close} />;
   if (type === "edit") return <EditItem v={video} clients={clients} people={people} close={close} />;
   if (type === "delete") return <DeleteItem v={video} close={close} />;
   if (type === "submit") return <SubmitDrive v={video} close={close} />;
@@ -270,7 +275,7 @@ function NewItem({ clients, people, close }) {
   const [brief, setBrief] = useState("");
   const [due, setDue] = useState("");
   const [durationMinutes, setDurationMinutes] = useState("");
-  const [topics, setTopics] = useState("");
+  const [expectedTopics, setExpectedTopics] = useState("10");
   const [shootDate, setShootDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [firstPostDate, setFirstPostDate] = useState("");
   const [scheduleMode, setScheduleMode] = useState("auto");
@@ -283,12 +288,10 @@ function NewItem({ clients, people, close }) {
   const creators = people.filter((p) => (p.roles || []).includes(roleForType));
   async function save() {
     if (type === "shoot") {
-      if (!topics.trim()) return setErr("Type one topic heading per line.");
       setBusy(true); setErr("");
       const fd = new FormData();
-      fd.set("brand_client_id", brandId); fd.set("presenter_client_id", presenterId); fd.set("topics", topics); fd.set("shoot_date", shootDate);
-      fd.set("first_post_date", firstPostDate || shootDate); fd.set("schedule_mode", scheduleMode);
-      fd.set("weekday", weekday); fd.set("edit_lead_days", editLeadDays); fd.set("editor_ids", editorIds.join(","));
+      fd.set("booking_only", "1"); fd.set("brand_client_id", brandId); fd.set("presenter_client_id", presenterId); fd.set("shoot_date", shootDate);
+      fd.set("expected_topic_count", expectedTopics); fd.set("shooter_id", editorId); fd.set("brief", brief);
       try { await createShootingPlan(fd); close(); } catch (e) { setErr(e.message); setBusy(false); }
       return;
     }
@@ -325,18 +328,10 @@ function NewItem({ clients, people, close }) {
         {activeBrand && <p className="hint">Saved aim: {activeBrand.posting_plan_mode === "daily" ? "one video every working day" : activeBrand.posting_plan_mode === "weekly" ? `${activeBrand.weekly_video_target || 1} video(s) weekly` : `${activeBrand.monthly_video_target || activeBrand.quota_videos || 0} video(s) monthly`}.</p>}
         <label className="lbl">Doctor / presenter in this video</label>
         <select className="input" value={presenterId} onChange={(e) => setPresenterId(e.target.value)}><option value="">— Not specified / institution video —</option>{presenters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-        <label className="lbl">Topic headings — one video per line</label>
-        <textarea className="textarea" style={{ minHeight: 150 }} value={topics} onChange={(e) => setTopics(e.target.value)} placeholder={"Diabetes in pregnancy\nFoods that raise sugar\nWhen to check HbA1c"} />
-        <p className="hint">Each line automatically becomes a separate Video To‑Do item.</p>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 160 }}><label className="lbl">Posting pattern</label><select className="input" value={scheduleMode} onChange={(e) => setScheduleMode(e.target.value)}><option value="auto">Use saved clinic/doctor aim</option><option value="spread">Spread across month</option><option value="daily">One every working day</option><option value="weekly">Same weekday weekly</option></select></div>
-          <div style={{ flex: 1, minWidth: 160 }}><label className="lbl">First posting date</label><input className="input" type="date" value={firstPostDate} min={shootDate} onChange={(e) => setFirstPostDate(e.target.value)} /></div>
-        </div>
-        {scheduleMode === "weekly" && <><label className="lbl">Posting weekday</label><select className="input" value={weekday} onChange={(e) => setWeekday(e.target.value)}><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></>}
-        <label className="lbl">Editing deadline before posting</label><select className="input" value={editLeadDays} onChange={(e) => setEditLeadDays(e.target.value)}><option value="1">1 working day before</option><option value="2">2 working days before</option><option value="3">3 working days before</option></select>
-        <label className="lbl">Video editors — select one or more</label>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 8 }}>{people.filter(p => (p.roles || []).includes("editor")).map(p => <label key={p.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked={editorIds.includes(p.id)} onChange={(e) => setEditorIds(e.target.checked ? [...editorIds, p.id] : editorIds.filter(id => id !== p.id))}/>{p.full_name}</label>)}</div>
-        <p className="hint">Assignments rotate after every 2 videos. Sundays are always skipped. Doctor/admin approval is required before editing starts.</p>
+        <label className="lbl">Expected number of topics</label><input className="input" type="number" min="1" value={expectedTopics} onChange={(e)=>setExpectedTopics(e.target.value)}/>
+        <label className="lbl">Shoot instructions</label><textarea className="textarea" value={brief} onChange={(e)=>setBrief(e.target.value)} placeholder="Location, equipment or doctor notes…"/>
+        <label className="lbl">Assign videographer</label><select className="input" value={editorId} onChange={(e)=>setEditorId(e.target.value)}><option value="">— Unassigned —</option>{people.filter(p=>(p.roles||[]).includes("shooter")).map(p=><option key={p.id} value={p.id}>{p.full_name}</option>)}</select>
+        <p className="hint">Only this shoot booking goes to the videographer. Video editor tasks are created later, while capturing the actual topic headings.</p>
       </> : <>
       <label className="lbl">Title</label>
       <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. 3 foods that spike sugar" />
@@ -357,10 +352,17 @@ function NewItem({ clients, people, close }) {
       {err && <p className="hint" style={{ color: "#B42318" }}>{err}</p>}
       <div className="mbtns">
         <button className="btn btn-ghost" onClick={close}>Cancel</button>
-        <button className="cta" disabled={busy} onClick={save}>{busy ? "Creating…" : type === "shoot" ? "Create shooting plan" : "Add to pipeline"}</button>
+        <button className="cta" disabled={busy} onClick={save}>{busy ? "Creating…" : type === "shoot" ? "Book shoot" : "Add to pipeline"}</button>
       </div>
     </div>
   );
+}
+
+function CaptureShoot({ v, people, close }) {
+  const [topics,setTopics]=useState(""); const [firstPostDate,setFirstPostDate]=useState(v.shoot_date||new Date().toISOString().slice(0,10));
+  const [scheduleMode,setScheduleMode]=useState("auto"); const [editLeadDays,setEditLeadDays]=useState("2"); const [editorIds,setEditorIds]=useState([]); const [busy,setBusy]=useState(false); const [err,setErr]=useState("");
+  async function create(){if(!topics.trim())return setErr("Enter at least one topic heading.");setBusy(true);const fd=new FormData();fd.set("shoot_item_id",v.id);fd.set("brand_client_id",v.client_id);fd.set("presenter_client_id",v.presenter_client_id||"");fd.set("topics",topics);fd.set("shoot_date",v.shoot_date||v.due_date);fd.set("first_post_date",firstPostDate);fd.set("schedule_mode",scheduleMode);fd.set("edit_lead_days",editLeadDays);fd.set("editor_ids",editorIds.join(","));try{await createShootingPlan(fd);close()}catch(e){setErr(e.message);setBusy(false)}}
+  return <div><PanelHead v={v} label="Capture completed shoot"/><p className="hint">Expected topics: {v.expected_topic_count||"—"}. Each line below becomes one editor To‑Do task.</p><label className="lbl">Actual topic headings — one per line</label><textarea className="textarea" style={{minHeight:170}} value={topics} onChange={e=>setTopics(e.target.value)}/><label className="lbl">First posting date</label><input className="input" type="date" value={firstPostDate} onChange={e=>setFirstPostDate(e.target.value)}/><label className="lbl">Posting pattern</label><select className="input" value={scheduleMode} onChange={e=>setScheduleMode(e.target.value)}><option value="auto">Use saved client aim</option><option value="spread">Spread across month</option><option value="daily">Every working day</option><option value="weekly">Weekly</option></select><label className="lbl">Edit deadline</label><select className="input" value={editLeadDays} onChange={e=>setEditLeadDays(e.target.value)}><option value="1">1 working day before post</option><option value="2">2 working days before post</option><option value="3">3 working days before post</option></select><label className="lbl">Assign video editors</label><div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:8}}>{people.filter(p=>(p.roles||[]).includes("editor")).map(p=><label key={p.id} style={{display:"flex",gap:8,fontSize:13}}><input type="checkbox" checked={editorIds.includes(p.id)} onChange={e=>setEditorIds(e.target.checked?[...editorIds,p.id]:editorIds.filter(id=>id!==p.id))}/>{p.full_name}</label>)}</div><p className="hint">Tasks rotate after every two videos. Sundays and occupied client dates are skipped.</p>{err&&<p className="hint" style={{color:"#B42318"}}>{err}</p>}<div className="mbtns"><button className="btn btn-ghost" onClick={close}>Cancel</button><button className="cta" disabled={busy} onClick={create}>{busy?"Creating tasks…":"Create editor tasks"}</button></div></div>
 }
 
 function ScheduleApproval({ v, close }) {
@@ -375,6 +377,7 @@ function EditItem({ v, clients, people, close }) {
     due_date: v.due_date || "", brief: v.brief || "",
     client_id: v.client_id || "", editor_id: v.editor_id || "",
     duration_minutes: v.duration_seconds ? String(Number(v.duration_seconds) / 60) : "",
+    reassignment_reason: "",
   });
   const roleForType = roleFor(f.item_type);
   const creators = people.filter((p) => (p.roles || []).includes(roleForType));
@@ -422,6 +425,7 @@ function EditItem({ v, clients, people, close }) {
         <option value="">— Unassigned —</option>
         {creators.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
       </select>
+      {f.editor_id !== (v.editor_id || "") && <><label className="lbl">Reason for transfer *</label><textarea className="textarea" value={f.reassignment_reason} onChange={set("reassignment_reason")} placeholder="e.g. Mufeed unavailable; transferred to Shamil"/></>}
       {err && <p className="hint" style={{ color: "#B42318" }}>{err}</p>}
       <div className="mbtns">
         <button className="btn btn-ghost" onClick={close}>Cancel</button>
