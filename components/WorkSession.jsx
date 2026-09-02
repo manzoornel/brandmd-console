@@ -36,14 +36,13 @@ export default function WorkSession({ name }) {
     let live = true;
     const verify = () => {
       // Attendance is recorded even without GPS; GPS only verifies office presence.
-      clockIn(base).catch(() => {});
-      if (!navigator.geolocation) { if (live) { setLocationWarning(true); setLocationMessage("Location is not available on this device."); } return; }
+      if (!navigator.geolocation) { clockIn(base).catch(() => {}); if (live) { setLocationWarning(true); setLocationMessage("Location is not available on this device."); } return; }
       navigator.geolocation.getCurrentPosition(async p => {
         try {
           const result = await clockIn({ ...base, latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy_m: p.coords.accuracy });
           if (live) { setLocationWarning(!result?.verified); setLocationMessage(result?.verified ? "" : result?.locationStatus || "Location could not be verified."); }
         } catch (_) { if (live) { setLocationWarning(true); setLocationMessage("Attendance marked, but office location could not be verified."); } }
-      }, () => { if (live) { setLocationWarning(true); setLocationMessage("Please allow location to verify BrandMD office attendance."); } }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+      }, () => { clockIn(base).catch(() => {}); if (live) { setLocationWarning(true); setLocationMessage("Please allow location to verify BrandMD office attendance."); } }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
     };
     verify();
     const reminder = setInterval(verify, 30 * 60 * 1000);
