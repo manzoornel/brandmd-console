@@ -47,7 +47,7 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
     const ig = published.filter(v => v.instagram_url).length;
     const fb = published.filter(v => v.facebook_url).length;
     const personAttendance = attendance.filter(a => a.user_id === p.id && inRange(a.clock_in));
-    const verifiedClockIns = attendanceEvents.filter(a => a.user_id === p.id && a.event_type === "clock_in" && a.location_verified && inRange(a.occurred_at)).length;
+    const verifiedClockIns = new Set(attendanceEvents.filter(a => a.user_id === p.id && a.event_type === "clock_in" && a.location_verified && inRange(a.occurred_at)).map(a => new Date(a.occurred_at).toLocaleDateString("en-CA"))).size;
     const hours = personAttendance.reduce((sum, a) => sum + hoursBetween(a.clock_in, a.clock_out || end), 0);
     const activeSeconds = logs.filter(l => l.user_id === p.id && inRange(l.started_at)).reduce((sum, l) => sum + (l.seconds || 0), 0);
     const completed = videos.filter(v => (v.editor_id === p.id || v.writer_id === p.id) && inRange(v.posted_at));
