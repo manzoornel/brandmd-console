@@ -42,7 +42,10 @@ export async function clockIn(context = {}) {
   const { data: office } = await supabase.from("office_settings").select("latitude, longitude, radius_m, minimum_gps_accuracy_m").eq("id", true).maybeSingle();
   const hasLocation = Number.isFinite(Number(context.latitude)) && Number.isFinite(Number(context.longitude));
   const distance = hasLocation && office ? earthDistanceM(Number(context.latitude), Number(context.longitude), office.latitude, office.longitude) : null;
-  const verified = distance != null && distance <= Number(office.radius_m) && Number(context.accuracy_m || 9999) <= Number(office.minimum_gps_accuracy_m || 50);
+  // Verify the reported point against the configured 20 m geofence. Desktop
+  // browsers often report a large accuracy radius even when that point is inside;
+  // treating accuracy as a second hard limit caused false "Outside office" results.
+  const verified = distance != null && distance <= Number(office.radius_m);
   const location_status = !hasLocation ? "Location unavailable" : verified ? "BrandMD Office" : "Outside office";
   const now = new Date().toISOString();
   const { data: stale } = await supabase.from("attendance").select("id").eq("user_id", user.id).is("clock_out", null).lt("work_date", today);
