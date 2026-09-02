@@ -28,7 +28,6 @@ export default function LoginPage() {
     setErr(""); setBusy(true);
 
     try {
-      const contextPromise = loginContext();
       const timeout = new Promise((_, reject) => {
         setTimeout(() => reject(new Error("Sign-in is taking too long. Please check your connection and try again.")), 15000);
       });
@@ -39,9 +38,9 @@ export default function LoginPage() {
 
       if (result?.error) throw new Error(result.error);
 
-      // Record device and office verification, but never let attendance block access.
-      const context = await contextPromise;
-      await Promise.race([clockIn(context), new Promise(resolve => setTimeout(resolve, 1800))]).catch(() => {});
+      // Mark attendance before navigation. Location is enriched from the signed-in layout.
+      const context = await loginContext();
+      await clockIn(context);
       window.location.replace("/dashboard");
     } catch (error) {
       setErr(error?.message || "Unable to sign in. Please try again.");
@@ -95,3 +94,4 @@ const S = {
   err: { marginTop: 12, background: "#FDECEC", color: "#B42318", borderRadius: 8, padding: "9px 12px", fontSize: 13 },
   note: { fontSize: 11.5, color: "#9AA0AE", marginTop: 16, lineHeight: 1.5 },
 };
+
