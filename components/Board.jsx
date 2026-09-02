@@ -21,6 +21,7 @@ const durationLabel = (seconds) => {
 };
 const videoUnitsFromMinutes = (minutes) => effectiveVideoUnits({ duration_seconds: Number(minutes) * 60 });
 const staffUnitsFromMinutes = (minutes) => effectiveStaffVideoUnits({ duration_seconds: Number(minutes) * 60 });
+const stageAge = value => { if (!value) return ""; const mins=Math.max(0,Math.floor((Date.now()-new Date(value))/60000)); return mins<60?`${mins} min`:mins<1440?`${Math.floor(mins/60)}h ${mins%60}m`:`${Math.floor(mins/1440)}d ${Math.floor((mins%1440)/60)}h`; };
 
 const DUE_COLORS = {
   over:  { bg: "#FDECEC", fg: "#B42318" },
@@ -115,7 +116,7 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
                         <div className="dgroup-body">
                           {arr.map((v) => (
                             <Card key={v.id} v={v} roles={roles} myId={myId} myClientId={myClientId}
-                              editorName={nameOf(v.editor_id)} subName={subNameOf(v)} presenterName={v.presenter_client_id ? clientOf(v.presenter_client_id) : null}
+                              editorName={nameOf(v.editor_id)} approverName={nameOf(v.approver_id)} writerName={nameOf(v.writer_id)} subName={subNameOf(v)} presenterName={v.presenter_client_id ? clientOf(v.presenter_client_id) : null}
                               onAction={(type) => setModal({ type, video: v })} />
                           ))}
                         </div>
@@ -148,7 +149,7 @@ function TypeBadge({ type }) {
   return <span className="tag" style={{ background: m.bg, color: m.fg, fontSize: 10 }}>{m.label}</span>;
 }
 
-function Card({ v, roles, myId, myClientId, editorName, subName, presenterName, onAction }) {
+function Card({ v, roles, myId, myClientId, editorName, approverName, writerName, subName, presenterName, onAction }) {
   const sm = stageMeta(v.stage);
   const idx = STAGE_INDEX[v.stage];
   const total = (v.yt_views || 0) + (v.ig_views || 0) + (v.fb_views || 0);
@@ -194,6 +195,12 @@ function Card({ v, roles, myId, myClientId, editorName, subName, presenterName, 
           {v.due_date && <span style={{ color: "#94A3B8" }}>📅 {shortDate(v.due_date)}</span>}
           {v.drive_link && <a className="link" href={v.drive_link} target="_blank" rel="noreferrer">File ↗</a>}
         </span>
+      </div>
+      <div style={{fontSize:11,color:"#64748B",marginTop:7,lineHeight:1.5}}>
+        {v.current_stage_entered_at && <span>⏱ In {sm.label} for {stageAge(v.current_stage_entered_at)}</span>}
+        {v.last_saved_at && <span> · Saved {new Date(v.last_saved_at).toLocaleString()}</span>}
+        {v.approver_id && <span> · Reviewed by {approverName}</span>}
+        {v.writer_id && <span> · Content owner: {writerName}</span>}
       </div>
       {v.stage === "to_edit" && v.rejection_note && <div className="rej">↩ Sent back: {v.rejection_note}</div>}
       {act ? (
@@ -634,3 +641,4 @@ function TaskTimerPill() {
   );
 }
 const linkBtn = { background: "none", border: "none", color: "#5B47FB", fontWeight: 700, fontSize: 12, cursor: "pointer", marginLeft: 6 };
+
