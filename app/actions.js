@@ -38,15 +38,29 @@ const earthDistanceM = (aLat, aLng, bLat, bLng) => {
 };
 export async function clockIn(context = {}) {
   const { supabase, user } = await me();
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   const { data: office } = await supabase.from("office_settings").select("latitude, longitude, radius_m, minimum_gps_accuracy_m").eq("id", true).maybeSingle();
   const hasLocation = Number.isFinite(Number(context.latitude)) && Number.isFinite(Number(context.longitude));
   const distance = hasLocation && office ? earthDistanceM(Number(context.latitude), Number(context.longitude), office.latitude, office.longitude) : null;
   const verified = distance != null && distance <= Number(office.radius_m) && Number(context.accuracy_m || 9999) <= Number(office.minimum_gps_accuracy_m || 50);
   const location_status = !hasLocation ? "Location unavailable" : verified ? "BrandMD Office" : "Outside office";
-  const { data: open } = await supabase
-    .from("attendance").select("id").eq("user_id", user.id).is("clock_out", null).limit(1);
-  if (!open || open.length === 0) await supabase.from("attendance").insert({ user_id: user.id, device_type: String(context.device_type || "Unknown"), device_label: String(context.device_label || "Unknown device"), location_status, distance_m: distance });
+  const now = new Date().toISOString();
+  const { data: stale } = await supabase.from("attendance").select("id").eq("user_id", user.id).is("clock_out", null).lt("work_date", today);
+  if (stale?.length) await supabase.from("attendance").update({ clock_out: now, auto_out: true }).in("id", stale.map(s => s.id));
+  const { data: existing } = await supabase.from("attendance").select("id").eq("user_id", user.id).eq("work_date", today).is("clock_out", null).order("clock_in", { ascending: false }).limit(1);
+  if (existing?.length) {
+    await supabase.from("attendance").update({ device_type: String(context.device_type || "Unknown"), device_label: String(context.device_label || "Unknown device"), location_status, distance_m: distance }).eq("id", existing[0].id);
+  } else {
+    const { error } = await supabase.from("attendance").insert({ user_id: user.id, work_date: today, device_type: String(context.device_type || "Unknown"), device_label: String(context.device_label || "Unknown device"), location_status, distance_m: distance });
+    if (error) throw new Error("Attendance could not be marked. Please retry.");
+  }
   await supabase.from("attendance_events").insert({ user_id: user.id, event_type: "clock_in", latitude: hasLocation ? Number(context.latitude) : null, longitude: hasLocation ? Number(context.longitude) : null, accuracy_m: Number(context.accuracy_m) || null, distance_m: distance, location_verified: verified, source: String(context.device_type || "web"), note: String(context.device_label || "") });
+  revalidatePath("/reports");
+  return { marked: true, verified, locationStatus: location_status };
+}
+
+async function logActivity(supabase, userId, videoId, eventType, metadata = {}) {
+  await supabase.from("activity_events").insert({ user_id: userId, video_id: videoId, event_type: eventType, metadata });
 }
 export async function clockOut(auto = false) {
   const { supabase, user } = await me();
@@ -168,11 +182,11 @@ export async function deleteClient(id) {
 
 /* ---------------- Workflow ---------------- */
 export async function addVideo(form) {
-  const { supabase, profile } = await me();
+  const { supabase, user, profile } = await me();
   if (!["super_admin", "admin", "editor", "designer", "shooter"].some((r) => has(profile.roles, r)))
     throw new Error("Not allowed");
   const durationSeconds = Number(form.get("duration_seconds"));
-  const { error } = await supabase.from("videos").insert({
+  const { data: created, error } = await supabase.from("videos").insert({
     title: form.get("title"),
     client_id: form.get("client_id") || null,
     editor_id: form.get("editor_id") || null,
@@ -181,36 +195,42 @@ export async function addVideo(form) {
     due_date: form.get("due_date") || null,
     duration_seconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? Math.round(durationSeconds) : null,
     stage: "to_edit",
-  });
+    current_stage_entered_at: new Date().toISOString(),
+  }).select("id").single();
   if (error) throw new Error("Unable to add this work item. Please try again.");
+  await logActivity(supabase, user.id, created.id, "created", { to_stage: "to_edit" });
   revalidatePath("/dashboard");
 }
 
 export async function submitDrive(videoId, link) {
-  const { supabase, profile } = await me();
+  const { supabase, user, profile } = await me();
   const { data: v } = await supabase.from("videos").select("item_type, editor_id").eq("id", videoId).single();
   const roleNeeded = v?.item_type === "poster" ? "designer" : v?.item_type === "shoot" ? "shooter" : "editor";
   const ok = admin_(profile.roles) ||
     (has(profile.roles, roleNeeded) && (!v?.editor_id || v.editor_id === profile.id));
   if (!ok) throw new Error("You don't have permission to submit this item.");
+  const now = new Date().toISOString();
   await supabase.from("videos").update({
     drive_link: link, stage: "review",
-    submitted_at: new Date().toISOString(), rejection_note: "",
+    submitted_at: now, current_stage_entered_at: now, last_saved_at: now, rejection_note: "",
   }).eq("id", videoId);
+  await logActivity(supabase, user.id, videoId, "stage_transition", { from_stage: "to_edit", to_stage: "review", saved_at: now });
   revalidatePath("/dashboard");
 }
 
 export async function approveVideo(videoId) {
-  const { supabase, profile } = await me();
+  const { supabase, user, profile } = await me();
   const { data: v, error: loadError } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
   if (loadError) throw new Error("Unable to load this item. Please refresh and try again.");
   const isClientApprover = has(profile.roles, "client") && profile.client_id && v?.client_id === profile.client_id;
   if (!admin_(profile.roles) && !isClientApprover) throw new Error("Not allowed to approve");
+  const now = new Date().toISOString();
   const { error } = await supabase.from("videos").update({
     stage: "content", approver_id: profile.id,
-    approved_at: new Date().toISOString(), rejection_note: "",
+    approved_at: now, current_stage_entered_at: now, last_saved_at: now, rejection_note: "",
   }).eq("id", videoId);
   if (error) throw new Error("Approval could not be saved. Please try again.");
+  await logActivity(supabase, user.id, videoId, "stage_transition", { from_stage: "review", to_stage: "content", decision: "approved" });
   revalidatePath("/dashboard");
 }
 
@@ -323,30 +343,34 @@ export async function approveSchedule(videoId) {
 }
 
 export async function rejectVideo(videoId, note) {
-  const { supabase, profile } = await me();
+  const { supabase, user, profile } = await me();
   const { data: v, error: loadError } = await supabase.from("videos").select("client_id").eq("id", videoId).single();
   if (loadError) throw new Error("Unable to load this item. Please refresh and try again.");
   const isClientApprover = has(profile.roles, "client") && profile.client_id && v?.client_id === profile.client_id;
   if (!admin_(profile.roles) && !isClientApprover) throw new Error("Not allowed");
+  const now = new Date().toISOString();
   const { error } = await supabase.from("videos").update({
-    stage: "to_edit", rejection_note: note || "Needs changes", submitted_at: null,
+    stage: "to_edit", rejection_note: note || "Needs changes", current_stage_entered_at: now, last_saved_at: now,
   }).eq("id", videoId);
   if (error) throw new Error("The review decision could not be saved. Please try again.");
+  await logActivity(supabase, user.id, videoId, "stage_transition", { from_stage: "review", to_stage: "to_edit", decision: "rejected", note: note || "Needs changes" });
   revalidatePath("/dashboard");
 }
 
 export async function savePost(videoId, fields) {
-  const { supabase, profile } = await me();
+  const { supabase, user, profile } = await me();
+  const now = new Date().toISOString();
   await supabase.from("videos").update({
     caption: fields.caption, hashtags: fields.hashtags, pinned_comment: fields.pinned,
     youtube_url: fields.youtube, instagram_url: fields.instagram, facebook_url: fields.facebook,
-    writer_id: profile.id,
+    writer_id: profile.id, last_saved_at: now,
   }).eq("id", videoId);
+  await logActivity(supabase, user.id, videoId, "content_saved", { stage: "content", saved_at: now });
   revalidatePath("/dashboard");
 }
 
 export async function markPosted(videoId, fields) {
-  const { supabase, profile } = await me();
+  const { supabase, user, profile } = await me();
   const { data: vt } = await supabase.from("videos").select("item_type").eq("id", videoId).single();
   if (vt?.item_type !== "shoot") {
     const missing = [];
@@ -355,11 +379,13 @@ export async function markPosted(videoId, fields) {
     if (!fields.facebook || !fields.facebook.trim()) missing.push("Facebook");
     if (missing.length) throw new Error(`Please paste the ${missing.join(", ")} link before publishing.`);
   }
+  const now = new Date().toISOString();
   await supabase.from("videos").update({
     caption: fields.caption, hashtags: fields.hashtags, pinned_comment: fields.pinned,
     youtube_url: fields.youtube, instagram_url: fields.instagram, facebook_url: fields.facebook,
-    writer_id: profile.id, stage: "published", posted_at: new Date().toISOString(),
+    writer_id: profile.id, stage: "published", posted_at: now, current_stage_entered_at: now, last_saved_at: now,
   }).eq("id", videoId);
+  await logActivity(supabase, user.id, videoId, "stage_transition", { from_stage: "content", to_stage: "published" });
   await stopTask(videoId);
   revalidatePath("/dashboard");
 }
@@ -444,7 +470,7 @@ export async function setFollowUp(form) {
 
 /* ---------------- v3 Round 3A: edit pipeline item (with assignment lock) ---------------- */
 export async function editVideo(form) {
-  const { supabase, profile } = await me();
+  const { supabase, user, profile } = await me();
   const id = form.get("id");
   const { data: v } = await supabase.from("videos").select("editor_id").eq("id", id).single();
   const allowed = admin_(profile.roles) || (v && v.editor_id === profile.id);
@@ -454,6 +480,7 @@ export async function editVideo(form) {
   const changedEditor = (v?.editor_id || null) !== nextEditor;
   const transferReason = String(form.get("reassignment_reason") || "").trim();
   if (changedEditor && v?.editor_id && !transferReason) throw new Error("Please enter a reason for transferring this task.");
+  const now = new Date().toISOString();
   const { error } = await supabase.from("videos").update({
     title: form.get("title"),
     item_type: form.get("item_type") || "video",
@@ -465,8 +492,10 @@ export async function editVideo(form) {
     reassigned_at: changedEditor ? new Date().toISOString() : undefined,
     reassigned_by: changedEditor ? profile.id : undefined,
     duration_seconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? Math.round(durationSeconds) : null,
+    last_saved_at: now,
   }).eq("id", id);
   if (error) throw new Error("Unable to save the video details. Please try again.");
+  await logActivity(supabase, user.id, id, "item_saved", { saved_at: now, editor_changed: changedEditor });
   if (changedEditor) await supabase.from("assignment_transfers").insert({ video_id: id, from_user_id: v?.editor_id || null, to_user_id: nextEditor, reason: transferReason || "Initial assignment", transferred_by: profile.id });
   revalidatePath("/dashboard");
 }
@@ -602,3 +631,4 @@ export async function deletePartner(id) {
   await supabase.from("partners").delete().eq("id", id);
   revalidatePath("/accounts");
 }
+
