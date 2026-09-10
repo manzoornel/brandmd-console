@@ -44,6 +44,9 @@ function DueBadge({ due, small }) {
 export default function Board({ roles, myId, myClientId, videos, clients, people }) {
   const [filter, setFilter] = useState("all");
   const [workScope, setWorkScope] = useState(isAdmin(roles) ? "all" : "mine");
+  const [publishedPeriod, setPublishedPeriod] = useState("This month");
+  const [publishedFrom, setPublishedFrom] = useState("");
+  const [publishedTo, setPublishedTo] = useState("");
   const [modal, setModal] = useState(null);
   const [open, setOpen] = useState({}); // user toggles for doctor groups
   const nameOf = (id) => people.find((p) => p.id === id)?.full_name || "—";
@@ -53,10 +56,27 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
   const subNameOf = (v) => { const c = clientById(v.client_id); return c && c.parent_id ? c.name : null; };
   const dueVal = (v) => (v.due_date ? new Date(v.due_date).getTime() : Infinity);
 
-  const shown = useMemo(
-    () => (filter === "all" ? videos : videos.filter((v) => v.client_id === filter)).filter(v => workScope === "all" || v.editor_id === myId || (v.stage === "content" && hasRole(roles, "writer"))),
-    [videos, filter, workScope, myId, roles]
-  );
+  const publishedInPeriod = (value) => {
+    if (!value) return false;
+    const date = new Date(value), now = new Date();
+    let start = new Date(now), end = new Date(now);
+    if (publishedPeriod === "Today") start.setHours(0, 0, 0, 0);
+    else if (publishedPeriod === "This week") { start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - 6); }
+    else if (publishedPeriod === "This month") start = new Date(now.getFullYear(), now.getMonth(), 1);
+    else if (publishedPeriod === "Last month") {
+      start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    } else {
+      if (!publishedFrom || !publishedTo) return false;
+      start = new Date(`${publishedFrom}T00:00:00`);
+      end = new Date(`${publishedTo}T23:59:59.999`);
+    }
+    return date >= start && date <= end;
+  };
+  const shown = useMemo(() => (filter === "all" ? videos : videos.filter((v) => v.client_id === filter))
+    .filter(v => workScope === "all" || v.editor_id === myId || (v.stage === "content" && hasRole(roles, "writer")))
+    .filter(v => v.stage !== "published" || publishedInPeriod(v.posted_at)),
+    [videos, filter, workScope, myId, roles, publishedPeriod, publishedFrom, publishedTo]);
   const canCreate = isAdmin(roles) || hasRole(roles, "editor") || hasRole(roles, "designer");
 
   const toggle = (key, count) =>
@@ -75,6 +95,10 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
             <option value="all">All doctors</option>
             {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
+          <select className="input" style={{ width: "auto" }} value={publishedPeriod} onChange={(e) => setPublishedPeriod(e.target.value)} title="Published date range">
+            {["Today","This week","This month","Last month","Custom days"].map(p=><option key={p}>{p}</option>)}
+          </select>
+          {publishedPeriod === "Custom days" && <><input className="input" style={{width:145}} type="date" value={publishedFrom} onChange={e=>setPublishedFrom(e.target.value)} title="Published from"/><input className="input" style={{width:145}} type="date" value={publishedTo} onChange={e=>setPublishedTo(e.target.value)} title="Published to"/></>}
           {canCreate && <button className="cta" onClick={() => setModal({ type: "new" })}>+ New item</button>}
         </div>
       </div>
