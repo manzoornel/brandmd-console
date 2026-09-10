@@ -75,6 +75,9 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
   };
   const shown = useMemo(() => (filter === "all" ? videos : videos.filter((v) => v.client_id === filter))
     .filter(v => workScope === "all" || v.editor_id === myId || (v.stage === "content" && hasRole(roles, "writer")))
+    // A shoot booking lives only in To Do until topics are captured. Completed
+    // shoots are reported as shooter output, not forwarded through review/publish.
+    .filter(v => !(v.item_type === "shoot" && (v.stage !== "to_edit" || v.schedule_status === "completed")))
     .filter(v => v.stage !== "published" || publishedInPeriod(v.posted_at)),
     [videos, filter, workScope, myId, roles, publishedPeriod, publishedFrom, publishedTo]);
   const canCreate = isAdmin(roles) || hasRole(roles, "editor") || hasRole(roles, "designer");
@@ -227,6 +230,10 @@ function Card({ v, roles, myId, myClientId, editorName, approverName, writerName
         {v.writer_id && <span> · Content owner: {writerName}</span>}
       </div>
       {v.stage === "to_edit" && v.rejection_note && <div className="rej">↩ Sent back: {v.rejection_note}</div>}
+      {v.stage === "published" && v.item_type !== "shoot" && (() => {
+        const missing = [!v.youtube_url && "YouTube", !v.instagram_url && "Instagram", !v.facebook_url && "Facebook"].filter(Boolean);
+        return missing.length ? <div className="rej">⚠ Missing link: {missing.join(", ")}</div> : null;
+      })()}
       {act ? (
         <button className="card-btn" style={{ background: sm.color }} onClick={() => onAction(act.type)}>{act.label}</button>
       ) : locked ? (
@@ -550,13 +557,6 @@ function PostContent({ v, close }) {
 
   async function draft() { setBusy(true); await savePost(v.id, f); close(); }
   async function post() {
-    if (v.item_type !== "shoot") {
-      const missing = [];
-      if (!f.youtube.trim()) missing.push("YouTube");
-      if (!f.instagram.trim()) missing.push("Instagram");
-      if (!f.facebook.trim()) missing.push("Facebook");
-      if (missing.length) { setErr(`Please paste the ${missing.join(", ")} link before publishing.`); return; }
-    }
     setErr(""); setBusy(true);
     try { await markPosted(v.id, f); close(); } catch (e) { setErr(e.message); setBusy(false); }
   }
@@ -572,18 +572,18 @@ function PostContent({ v, close }) {
       <label className="lbl">Pinned comment</label>
       <input className="input" value={f.pinned} onChange={set("pinned")} placeholder="e.g. Book an appointment — link in bio" />
       <p className="hint" style={{ marginTop: 14, fontWeight: 600, color: "#1A1730" }}>
-        {v.item_type === "shoot" ? "Links are optional for a shoot:" : "All three links are required to publish:"}
+        Add every available platform link. Any missing link will be flagged on the published item.
       </p>
-      <label className="lbl">YouTube link *</label>
+      <label className="lbl">YouTube link</label>
       <input className="input" value={f.youtube} onChange={set("youtube")} placeholder="https://youtu.be/…" />
       {embed && (
         <div style={{ position: "relative", paddingTop: "56%", marginTop: 10, borderRadius: 10, overflow: "hidden" }}>
           <iframe src={embed} title="YouTube" allowFullScreen style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }} />
         </div>
       )}
-      <label className="lbl">Instagram link *</label>
+      <label className="lbl">Instagram link</label>
       <input className="input" value={f.instagram} onChange={set("instagram")} placeholder="https://instagram.com/…" />
-      <label className="lbl">Facebook link *</label>
+      <label className="lbl">Facebook link</label>
       <input className="input" value={f.facebook} onChange={set("facebook")} placeholder="https://facebook.com/…" />
       {err && <p className="hint" style={{ color: "#B42318", fontWeight: 600 }}>{err}</p>}
       <div className="mbtns">
