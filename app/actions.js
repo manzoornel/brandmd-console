@@ -40,8 +40,14 @@ export async function clockIn(context = {}) {
   const { supabase, user } = await me();
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   const { data: office } = await supabase.from("office_settings").select("latitude, longitude, radius_m, minimum_gps_accuracy_m").eq("id", true).maybeSingle();
-  const hasLocation = Number.isFinite(Number(context.latitude)) && Number.isFinite(Number(context.longitude));
-  const distance = hasLocation && office ? earthDistanceM(Number(context.latitude), Number(context.longitude), office.latitude, office.longitude) : null;
+  const latitude = Number(context.latitude);
+  const longitude = Number(context.longitude);
+  // Some desktop browsers return the null-island placeholder (0, 0) when
+  // location is blocked. Never classify that placeholder as a real position.
+  const hasLocation = Number.isFinite(latitude) && Number.isFinite(longitude)
+    && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180
+    && !(Math.abs(latitude) < 0.0001 && Math.abs(longitude) < 0.0001);
+  const distance = hasLocation && office ? earthDistanceM(latitude, longitude, office.latitude, office.longitude) : null;
   // Verify the reported point against the configured 20 m geofence. Desktop
   // browsers often report a large accuracy radius even when that point is inside;
   // treating accuracy as a second hard limit caused false "Outside office" results.
@@ -57,7 +63,7 @@ export async function clockIn(context = {}) {
     const { error } = await supabase.from("attendance").insert({ user_id: user.id, work_date: today, device_type: String(context.device_type || "Unknown"), device_label: String(context.device_label || "Unknown device"), location_status, distance_m: distance });
     if (error) throw new Error("Attendance could not be marked. Please retry.");
   }
-  await supabase.from("attendance_events").insert({ user_id: user.id, event_type: "clock_in", latitude: hasLocation ? Number(context.latitude) : null, longitude: hasLocation ? Number(context.longitude) : null, accuracy_m: Number(context.accuracy_m) || null, distance_m: distance, location_verified: verified, source: String(context.device_type || "web"), note: String(context.device_label || "") });
+  await supabase.from("attendance_events").insert({ user_id: user.id, event_type: "clock_in", latitude: hasLocation ? latitude : null, longitude: hasLocation ? longitude : null, accuracy_m: Number(context.accuracy_m) || null, distance_m: distance, location_verified: verified, source: String(context.device_type || "web"), note: String(context.device_label || "") });
   revalidatePath("/reports");
   return { marked: true, verified, locationStatus: location_status };
 }
@@ -329,7 +335,13 @@ export async function createShootingPlan(form) {
   });
   const { error } = await supabase.from("videos").insert(items);
   if (error) throw new Error("Unable to create the shooting plan. Please try again.");
-  if (form.get("shoot_item_id")) await supabase.from("videos").update({ stage: "published", submitted_at: new Date().toISOString(), posted_at: new Date().toISOString() }).eq("id", form.get("shoot_item_id"));
+  if (form.get("shoot_item_id")) {
+    const completedAt = new Date().toISOString();
+    await supabase.from("videos").update({
+      stage: "to_edit", schedule_status: "completed", submitted_at: completedAt,
+      posted_at: null, current_stage_entered_at: completedAt, last_saved_at: completedAt,
+    }).eq("id", form.get("shoot_item_id"));
+  }
   revalidatePath("/dashboard");
 }
 
@@ -374,14 +386,6 @@ export async function savePost(videoId, fields) {
 
 export async function markPosted(videoId, fields) {
   const { supabase, user, profile } = await me();
-  const { data: vt } = await supabase.from("videos").select("item_type").eq("id", videoId).single();
-  if (vt?.item_type !== "shoot") {
-    const missing = [];
-    if (!fields.youtube || !fields.youtube.trim()) missing.push("YouTube");
-    if (!fields.instagram || !fields.instagram.trim()) missing.push("Instagram");
-    if (!fields.facebook || !fields.facebook.trim()) missing.push("Facebook");
-    if (missing.length) throw new Error(`Please paste the ${missing.join(", ")} link before publishing.`);
-  }
   const now = new Date().toISOString();
   await supabase.from("videos").update({
     caption: fields.caption, hashtags: fields.hashtags, pinned_comment: fields.pinned,
