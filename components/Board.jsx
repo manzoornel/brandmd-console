@@ -56,7 +56,7 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
   const subNameOf = (v) => { const c = clientById(v.client_id); return c && c.parent_id ? c.name : null; };
   const dueVal = (v) => (v.due_date ? new Date(v.due_date).getTime() : Infinity);
 
-  const publishedInPeriod = (value) => {
+  const inSelectedPeriod = (value) => {
     if (!value) return false;
     const date = new Date(value), now = new Date();
     let start = new Date(now), end = new Date(now);
@@ -73,13 +73,23 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
     }
     return date >= start && date <= end;
   };
+  const visibleForRole = (v) => {
+    if (workScope === "all" && isAdmin(roles)) return true;
+    if (hasRole(roles, "client")) return v.client_id === myClientId || topKeyOf(v) === myClientId;
+    return v.editor_id === myId || v.writer_id === myId || (v.stage === "content" && hasRole(roles, "writer"));
+  };
+  const stageDate = (v) => v.stage === "published"
+    ? v.posted_at
+    : v.stage === "content" ? (v.approved_at || v.current_stage_entered_at) : null;
   const shown = useMemo(() => (filter === "all" ? videos : videos.filter((v) => v.client_id === filter))
-    .filter(v => workScope === "all" || v.editor_id === myId || (v.stage === "content" && hasRole(roles, "writer")))
+    .filter(visibleForRole)
     // A shoot booking lives only in To Do until topics are captured. Completed
     // shoots are reported as shooter output, not forwarded through review/publish.
     .filter(v => !(v.item_type === "shoot" && (v.stage !== "to_edit" || v.schedule_status === "completed")))
-    .filter(v => v.stage !== "published" || publishedInPeriod(v.posted_at)),
-    [videos, filter, workScope, myId, roles, publishedPeriod, publishedFrom, publishedTo]);
+    // Pending To Do/Review work always stays visible. The selected period keeps
+    // completed content/published columns free from older-month records.
+    .filter(v => !["content", "published"].includes(v.stage) || inSelectedPeriod(stageDate(v))),
+    [videos, filter, workScope, myId, myClientId, roles, publishedPeriod, publishedFrom, publishedTo]);
   const canCreate = isAdmin(roles) || hasRole(roles, "editor") || hasRole(roles, "designer");
 
   const toggle = (key, count) =>
@@ -98,7 +108,7 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
             <option value="all">All doctors</option>
             {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          <select className="input" style={{ width: "auto" }} value={publishedPeriod} onChange={(e) => setPublishedPeriod(e.target.value)} title="Published date range">
+          <select className="input" style={{ width: "auto" }} value={publishedPeriod} onChange={(e) => setPublishedPeriod(e.target.value)} title="Content and published date range">
             {["Today","This week","This month","Last month","Custom days"].map(p=><option key={p}>{p}</option>)}
           </select>
           {publishedPeriod === "Custom days" && <><input className="input" style={{width:145}} type="date" value={publishedFrom} onChange={e=>setPublishedFrom(e.target.value)} title="Published from"/><input className="input" style={{width:145}} type="date" value={publishedTo} onChange={e=>setPublishedTo(e.target.value)} title="Published to"/></>}
@@ -204,7 +214,7 @@ function Card({ v, roles, myId, myClientId, editorName, approverName, writerName
         <span className="tag" style={{ background: "#FFF7ED", color: "#C2410C" }}>{effectiveStaffVideoUnits(v)} staff unit{effectiveStaffVideoUnits(v) === 1 ? "" : "s"}</span>
       </div>}
       {v.scheduled_post_date && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 7 }}>
-        <span className="tag" style={{ background: "#EEF2FF", color: "#4338CA" }}>Post: {shortDate(v.scheduled_post_date)}</span>
+        <span className="tag" style={{ background: "#EEF2FF", color: "#4338CA" }}>Publish due: {shortDate(v.scheduled_post_date)}</span>
         <span className="tag" style={{ background: v.schedule_status === "approved" ? "#ECFDF3" : "#FFF7ED", color: v.schedule_status === "approved" ? "#027A48" : "#C2410C" }}>{v.schedule_status === "approved" ? "Schedule approved" : "Awaiting schedule approval"}</span>
       </div>}
       {subName && <div style={{ fontSize: 11.5, fontWeight: 600, color: "#5B47FB", marginBottom: 6 }}>👤 {subName}</div>}
@@ -228,6 +238,7 @@ function Card({ v, roles, myId, myClientId, editorName, approverName, writerName
         {v.last_saved_at && <span> · Saved {new Date(v.last_saved_at).toLocaleString()}</span>}
         {v.approver_id && <span> · Reviewed by {approverName}</span>}
         {v.writer_id && <span> · Content owner: {writerName}</span>}
+        {v.stage === "published" && v.posted_at && <span> · Published {new Date(v.posted_at).toLocaleString()}</span>}
       </div>
       {v.stage === "to_edit" && v.rejection_note && <div className="rej">↩ Sent back: {v.rejection_note}</div>}
       {v.stage === "published" && v.item_type !== "shoot" && (() => {
