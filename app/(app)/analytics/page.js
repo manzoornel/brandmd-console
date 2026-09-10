@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export default async function AnalyticsPage() {
   const profile = await getProfile();
   const supabase = createClient();
-  let q = supabase.from("videos").select("id, title, client_id, yt_views, ig_views, fb_views").eq("stage", "published");
+  let q = supabase.from("videos").select("id, title, client_id, item_type, posted_at, youtube_url, instagram_url, facebook_url, yt_views, ig_views, fb_views").eq("stage", "published").neq("item_type", "shoot");
   if ((profile.roles || []).includes("client") && profile.client_id) {
     const { data: kids } = await supabase.from("clients").select("id").eq("parent_id", profile.client_id);
     const ids = [profile.client_id, ...((kids || []).map((k) => k.id))];
