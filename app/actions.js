@@ -54,8 +54,15 @@ export async function clockIn(context = {}) {
   const verified = distance != null && distance <= Number(office.radius_m);
   const location_status = !hasLocation ? "Location unavailable" : verified ? "BrandMD Office" : "Outside office";
   const now = new Date().toISOString();
-  const { data: stale } = await supabase.from("attendance").select("id").eq("user_id", user.id).is("clock_out", null).lt("work_date", today);
-  if (stale?.length) await supabase.from("attendance").update({ clock_out: now, auto_out: true }).in("id", stale.map(s => s.id));
+  const { data: stale } = await supabase.from("attendance").select("id, work_date, clock_in").eq("user_id", user.id).is("clock_out", null).lt("work_date", today);
+  // Close abandoned sessions at that work day's shift end, not at the next
+  // login time. This prevents 18–120 hour attendance totals.
+  for (const session of stale || []) {
+    const shiftEnd = new Date(`${session.work_date}T17:00:00+05:30`);
+    const clockInAt = new Date(session.clock_in);
+    const safeOut = shiftEnd > clockInAt ? shiftEnd : new Date(clockInAt.getTime() + 7.5 * 36e5);
+    await supabase.from("attendance").update({ clock_out: safeOut.toISOString(), auto_out: true }).eq("id", session.id);
+  }
   const { data: existing } = await supabase.from("attendance").select("id").eq("user_id", user.id).eq("work_date", today).is("clock_out", null).order("clock_in", { ascending: false }).limit(1);
   if (existing?.length) {
     await supabase.from("attendance").update({ device_type: String(context.device_type || "Unknown"), device_label: String(context.device_label || "Unknown device"), location_status, distance_m: distance }).eq("id", existing[0].id);
