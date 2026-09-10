@@ -13,14 +13,14 @@ export default async function DoctorsPage() {
   const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
   const [{ data: clients }, { data: videos }, { data: packages }] = await Promise.all([
     supabase.from("clients").select("*").order("created_at"),
-    supabase.from("videos").select("client_id, stage, item_type, yt_views, ig_views, fb_views, created_at"),
+    supabase.from("videos").select("client_id, stage, item_type, yt_views, ig_views, fb_views, created_at, submitted_at, posted_at"),
     admin ? supabase.from("packages").select("id, name, price").order("created_at") : Promise.resolve({ data: [] }),
   ]);
   const stat = (c) => {
     const ts = (videos || []).filter((v) => v.client_id === c.id);
-    const pub = ts.filter((v) => v.stage === "published");
+    const pub = ts.filter((v) => v.stage === "published" && v.item_type !== "shoot");
     const views = pub.reduce((a, v) => a + v.yt_views + v.ig_views + v.fb_views, 0);
-    const tm = ts.filter((v) => v.created_at >= monthStart);
+    const tm = pub.filter((v) => v.posted_at >= monthStart);
     return { total: ts.length, pub: pub.length, views,
       usedV: tm.filter((v) => v.item_type === "video").length,
       usedP: tm.filter((v) => v.item_type === "poster").length };
@@ -52,7 +52,7 @@ export default async function DoctorsPage() {
               <div className="cpkg">{c.package || "—"}{admin && c.price > 0 ? ` · ₹${Number(c.price).toLocaleString("en-IN")}` : ""}</div>
               {(c.quota_videos > 0 || c.quota_posters > 0) && (
                 <div className="cpkg" style={{ color: "#475569" }}>
-                  This month: {s.usedV}/{c.quota_videos} videos · {s.usedP}/{c.quota_posters} posters
+                  Delivered this month: {s.usedV}/{c.quota_videos} videos · {s.usedP}/{c.quota_posters} posters
                 </div>
               )}
               <div className="cstats">
