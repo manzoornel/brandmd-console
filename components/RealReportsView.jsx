@@ -5,12 +5,7 @@ import styles from "./ReportsDemo.module.css";
 import { rolesLabel } from "@/lib/roles";
 import { clientVideoCharge, compensationBreakdown, effectiveStaffVideoUnits, effectiveVideoUnits, workingDaysInMonth } from "@/lib/operations";
 
-const ranges = {
-  Today: 0,
-  "This week": 6,
-  "This month": 30,
-  "Last 90 days": 90,
-};
+const periods = ["Today", "This week", "This month", "Last month", "Custom days"];
 
 const asDate = (value) => value ? new Date(value) : null;
 const hoursBetween = (start, end) => Math.max(0, (new Date(end) - new Date(start)) / 36e5);
@@ -18,6 +13,8 @@ const fmtTime = value => value ? new Date(value).toLocaleTimeString([], { hour: 
 
 export default function RealReportsView({ generatedAt, people, videos, attendance, attendanceEvents, activityEvents, logs, clients, compensationRules, sundayCredits }) {
   const [period, setPeriod] = useState("This month");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [role, setRole] = useState("All roles");
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("Overview");
@@ -29,9 +26,15 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
     if (period === "Today") start.setHours(0, 0, 0, 0);
     else if (period === "This week") { start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - 6); }
     else if (period === "This month") start = new Date(now.getFullYear(), now.getMonth(), 1);
-    else { start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - ranges[period]); }
+    else if (period === "Last month") {
+      start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      end.setTime(new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999).getTime());
+    } else if (period === "Custom days") {
+      start = customFrom ? new Date(`${customFrom}T00:00:00`) : new Date(now.getFullYear(), now.getMonth(), 1);
+      end.setTime(customTo ? new Date(`${customTo}T23:59:59.999`).getTime() : now.getTime());
+    }
     return { start, end };
-  }, [period, generatedAt]);
+  }, [period, generatedAt, customFrom, customTo]);
 
   const inRange = (value) => { const d = asDate(value); return d && d >= start && d <= end; };
   const staff = useMemo(() => people.filter(p => p.active !== false && !(p.roles || []).includes("client")), [people]);
@@ -127,7 +130,7 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
   return <div className="body">
     <div className={styles.heading}><div><p className={styles.eyebrow}>OPERATIONS INTELLIGENCE</p><h1>Team reports</h1><p>Live production, publishing and attendance data from BrandMD.</p></div><button className={styles.export} onClick={() => window.print()}>⇩ Print report</button></div>
     <div className={styles.tabs}>{["Overview","Live attendance","Workers","Doctors & quotas","Salary & incentives","Stage timing","Activity log"].map(t => <button key={t} onClick={() => setTab(t)} className={tab === t ? styles.tabActive : ""}>{t}</button>)}</div>
-    <div className={styles.filters}><select value={period} onChange={e => setPeriod(e.target.value)}>{Object.keys(ranges).map(p => <option key={p}>{p}</option>)}</select><select value={role} onChange={e => setRole(e.target.value)}>{["All roles","Editor","Writer","Designer","Shooter","Admin"].map(r => <option key={r}>{r}</option>)}</select><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search worker…"/><span className={styles.updated}>● Live Supabase data</span></div>
+    <div className={styles.filters}><select value={period} onChange={e => setPeriod(e.target.value)}>{periods.map(p => <option key={p}>{p}</option>)}</select>{period === "Custom days" && <><input type="date" value={customFrom} onChange={e=>setCustomFrom(e.target.value)} title="Report from"/><input type="date" value={customTo} onChange={e=>setCustomTo(e.target.value)} title="Report to"/></>}<select value={role} onChange={e => setRole(e.target.value)}>{["All roles","Editor","Writer","Designer","Shooter","Admin"].map(r => <option key={r}>{r}</option>)}</select><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search worker…"/><span className={styles.updated}>● Live Supabase data</span></div>
     {tab === "Overview" && <><section className={styles.kpis}><Kpi icon="▶" color="violet" value={total("edited")} label="Videos edited"/><Kpi icon="●" color="amber" value={total("shoots")} label="Shoots completed"/><Kpi icon="↗" color="green" value={total("posts")} label="Platform posts"/><Kpi icon="◇" color="coral" value={total("images")} label="Posters / images"/></section><section className={styles.grid2}><div className={styles.panel}><Title title="Output by worker" sub="Completed workflow output in selected period"/>{rows.map(w => <Bar key={w.id} w={w} max={Math.max(1,...rows.map(x=>x.edited+x.shoots+x.images+x.posts))}/>)}</div><div className={styles.panel}><Title title="Publishing mix" sub="Each platform post is counted separately"/><Donut yt={total("yt")} ig={total("ig")} fb={total("fb")}/><div className={styles.legend}><span><i className={styles.yt}/>YouTube <b>{total("yt")}</b></span><span><i className={styles.ig}/>Instagram <b>{total("ig")}</b></span><span><i className={styles.fb}/>Facebook <b>{total("fb")}</b></span></div></div></section>{top && <section className={styles.insight}><span>★</span><div><b>{top.full_name} leads output for this period</b><p>Based on videos, shoots, posters and individual platform posts.</p></div><button onClick={()=>setTab("Workers")}>View worker report →</button></section>}</>}
     {tab === "Workers" && <div className={styles.panel}><Title title="Worker performance" sub="Live output, attendance and staff incentive units"/><table><thead><tr><th>Worker</th><th>Role</th><th>Edits</th><th>Staff units</th><th>Shoots</th><th>Posts</th><th>Images</th><th>Verified days</th><th>Hours</th><th>Rework*</th><th>Avg. turnaround</th></tr></thead><tbody>{rows.map(w=><tr key={w.id}><td><b>{w.full_name}</b></td><td>{w.role}</td><td>{w.edited}</td><td><b>{w.staffUnits.toFixed(1)}</b></td><td>{w.shoots}</td><td>{w.posts}</td><td>{w.images}</td><td>{w.verifiedClockIns}</td><td>{w.hours.toFixed(1)}h</td><td>{w.rework}</td><td>{w.turnaround ? `${w.turnaround.toFixed(1)} days` : "—"}</td></tr>)}</tbody></table><p className="hint">* Staff units are calculated separately from client billing. Existing rejection history starts from the activity-event migration.</p></div>}
     {tab === "Live attendance" && <div className={styles.panel}><Title title="Login & worked-time live view" sub="Every login session recorded during the selected period"/><table><thead><tr><th>Staff</th><th>Date</th><th>Login</th><th>Logout</th><th>Device</th><th>Location</th><th>Worked</th><th>Status</th></tr></thead><tbody>{attendanceRows.map((a,i)=><tr key={`${a.user_id}-${a.clock_in}-${i}`}><td><b>{a.name}</b><br/><small>{a.role}</small></td><td>{new Date(a.clock_in).toLocaleDateString()}</td><td>{fmtTime(a.clock_in)}</td><td>{a.live ? "—" : fmtTime(a.clock_out)}</td><td><b>{a.device_type || "Legacy login"}</b><br/><small>{a.device_label || "Not recorded"}</small></td><td>{a.location_status || "Legacy login"}{Number.isFinite(Number(a.distance_m)) && <><br/><small>{Math.round(Number(a.distance_m))} m from saved office point</small></>}</td><td><b>{a.worked.toFixed(1)} h</b></td><td>{a.live ? <b style={{color:"#059669"}}>● Live now</b> : "Completed"}</td></tr>)}{!attendanceRows.length&&<tr><td colSpan="8">No attendance sessions in this period.</td></tr>}</tbody></table></div>}
