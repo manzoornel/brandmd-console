@@ -10,6 +10,13 @@ const periods = ["Today", "This week", "This month", "Last month", "Custom days"
 const asDate = (value) => value ? new Date(value) : null;
 const hoursBetween = (start, end) => Math.max(0, (new Date(end) - new Date(start)) / 36e5);
 const fmtTime = value => value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+const reportSessionEnd = (a, rangeEnd) => {
+  if (a.clock_out) return new Date(a.clock_out);
+  const today = new Date().toLocaleDateString("en-CA");
+  if (a.work_date === today) return new Date(rangeEnd);
+  const shiftEnd = new Date(`${a.work_date}T17:00:00+05:30`);
+  return shiftEnd > new Date(a.clock_in) ? shiftEnd : new Date(new Date(a.clock_in).getTime() + 7.5 * 36e5);
+};
 
 export default function RealReportsView({ generatedAt, people, videos, attendance, attendanceEvents, activityEvents, logs, clients, compensationRules, sundayCredits }) {
   const [period, setPeriod] = useState("This month");
@@ -51,7 +58,7 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
     const fb = published.filter(v => v.facebook_url).length;
     const personAttendance = attendance.filter(a => a.user_id === p.id && inRange(a.clock_in));
     const verifiedClockIns = new Set(attendanceEvents.filter(a => a.user_id === p.id && a.event_type === "clock_in" && a.location_verified && inRange(a.occurred_at)).map(a => new Date(a.occurred_at).toLocaleDateString("en-CA"))).size;
-    const hours = personAttendance.reduce((sum, a) => sum + hoursBetween(a.clock_in, a.clock_out || end), 0);
+    const hours = personAttendance.reduce((sum, a) => sum + Math.min(12, hoursBetween(a.clock_in, reportSessionEnd(a, end))), 0);
     const activeSeconds = logs.filter(l => l.user_id === p.id && inRange(l.started_at)).reduce((sum, l) => sum + (l.seconds || 0), 0);
     const completed = videos.filter(v => (v.editor_id === p.id || v.writer_id === p.id) && inRange(v.posted_at));
     const turnaround = completed.length ? completed.reduce((sum, v) => sum + hoursBetween(v.created_at, v.posted_at) / 24, 0) / completed.length : 0;
@@ -104,8 +111,9 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
   const total = key => rows.reduce((sum, row) => sum + row[key], 0);
   const attendanceRows = useMemo(() => attendance.filter(a => inRange(a.clock_in)).map(a => {
     const person = people.find(p => p.id === a.user_id);
-    const worked = hoursBetween(a.clock_in, a.clock_out || end);
-    return { ...a, name: person?.full_name || "Unknown user", role: rolesLabel(person?.roles || []), worked, live: !a.clock_out };
+    const worked = Math.min(12, hoursBetween(a.clock_in, reportSessionEnd(a, end)));
+    const live = !a.clock_out && a.work_date === new Date().toLocaleDateString("en-CA");
+    return { ...a, name: person?.full_name || "Unknown user", role: rolesLabel(person?.roles || []), worked, live };
   }).filter(a => a.name.toLowerCase().includes(query.toLowerCase())).sort((a,b) => new Date(b.clock_in)-new Date(a.clock_in)), [attendance, people, start, end, query]);
   const top = [...rows].sort((a,b) => (b.edited+b.shoots+b.images+b.posts) - (a.edited+a.shoots+a.images+a.posts))[0];
   const events = useMemo(() => (activityEvents || []).filter(e => inRange(e.created_at)).map(e => {
