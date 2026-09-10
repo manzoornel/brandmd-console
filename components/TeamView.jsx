@@ -5,6 +5,12 @@ import { hms } from "@/lib/format";
 
 const ymd = (d) => new Date(d).toLocaleDateString("en-CA"); // YYYY-MM-DD local
 const fmtTime = (t) => (t ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—");
+const safeSessionEnd = (a, now) => {
+  if (a.clock_out) return new Date(a.clock_out);
+  if (a.work_date === ymd(now)) return now;
+  const shiftEnd = new Date(`${a.work_date}T17:00:00+05:30`);
+  return shiftEnd > new Date(a.clock_in) ? shiftEnd : new Date(new Date(a.clock_in).getTime() + 7.5 * 36e5);
+};
 
 export default function TeamView({ people, attendance, logs, videos }) {
   const [range, setRange] = useState("today");
@@ -22,13 +28,13 @@ export default function TeamView({ people, attendance, logs, videos }) {
   const dayInRange = (wd) => { const d = new Date(wd + "T00:00:00"); return d >= start && d <= new Date(ymd(end) + "T23:59:59"); };
 
   const rows = useMemo(() => {
-    const staff = people.filter((p) => (p.roles || []).some((r) => ["editor", "writer", "designer", "admin"].includes(r)));
+    const staff = people.filter((p) => (p.roles || []).some((r) => ["super_admin", "admin", "editor", "writer", "designer", "shooter"].includes(r)));
     return staff.map((p) => {
       const att = attendance.filter((a) => a.user_id === p.id && dayInRange(a.work_date))
         .sort((a, b) => new Date(a.clock_in) - new Date(b.clock_in));
       const hours = att.reduce((s, a) => {
-        const out = a.clock_out || (isToday ? new Date().toISOString() : a.clock_in);
-        return s + Math.max(0, (new Date(out) - new Date(a.clock_in)) / 36e5);
+        const out = safeSessionEnd(a, new Date());
+        return s + Math.min(12, Math.max(0, (out - new Date(a.clock_in)) / 36e5));
       }, 0);
       const active = logs.filter((l) => l.user_id === p.id && inRange(l.started_at)).reduce((s, l) => s + (l.seconds || 0), 0);
       const submitted = videos.filter((v) => v.editor_id === p.id && inRange(v.submitted_at)).length;
@@ -36,7 +42,9 @@ export default function TeamView({ people, attendance, logs, videos }) {
       const score = published * 3 + submitted * 2 + hours;
       const daysPresent = new Set(att.map((a) => a.work_date)).size;
       const delta = daysPresent ? hours - 7.5 * daysPresent : 0; // standard 9:30–5:00 = 7.5h/day
-      return { p, firstIn: att[0]?.clock_in, lastOut: att.some((a) => !a.clock_out) && isToday ? null : att[att.length - 1]?.clock_out,
+      const liveNow = att.some((a) => !a.clock_out && a.work_date === ymd(new Date())) && isToday;
+      const lastSession = att[att.length - 1];
+      return { p, firstIn: att[0]?.clock_in, lastOut: liveNow || !lastSession ? null : (lastSession.clock_out || safeSessionEnd(lastSession, new Date()).toISOString()),
         hours, active, submitted, published, score, delta, daysPresent };
     });
   }, [people, attendance, logs, videos, start, end]);
