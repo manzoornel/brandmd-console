@@ -4,25 +4,45 @@ import { fmt } from "@/lib/format";
 
 export default function AnalyticsView({ videos, clients }) {
   const [open, setOpen] = useState({});
+  const [period, setPeriod] = useState("This month");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const nameOf = (id) => clients.find((c) => c.id === id)?.name || "— No doctor —";
+
+  const filteredVideos = useMemo(() => {
+    const now = new Date(); let start = new Date(now); let end = new Date(now);
+    if (period === "Today") start.setHours(0, 0, 0, 0);
+    else if (period === "This week") { start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - 6); }
+    else if (period === "This month") start = new Date(now.getFullYear(), now.getMonth(), 1);
+    else if (period === "Last month") { start = new Date(now.getFullYear(), now.getMonth() - 1, 1); end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999); }
+    else { start = customFrom ? new Date(`${customFrom}T00:00:00`) : new Date(now.getFullYear(), now.getMonth(), 1); end = customTo ? new Date(`${customTo}T23:59:59.999`) : now; }
+    return videos.filter(v => v.posted_at && new Date(v.posted_at) >= start && new Date(v.posted_at) <= end);
+  }, [videos, period, customFrom, customTo]);
 
   const groups = useMemo(() => {
     const g = {};
-    videos.forEach((v) => { (g[v.client_id] || (g[v.client_id] = [])).push(v); });
+    filteredVideos.forEach((v) => { (g[v.client_id] || (g[v.client_id] = [])).push(v); });
     return Object.entries(g).map(([cid, arr]) => {
       const yt = arr.reduce((a, v) => a + (v.yt_views || 0), 0);
       const ig = arr.reduce((a, v) => a + (v.ig_views || 0), 0);
       const fb = arr.reduce((a, v) => a + (v.fb_views || 0), 0);
       return { cid, name: nameOf(cid), items: arr, yt, ig, fb, total: yt + ig + fb };
     }).sort((a, b) => b.total - a.total);
-  }, [videos, clients]);
+  }, [filteredVideos, clients]);
 
-  const sum = (k) => videos.reduce((a, v) => a + (v[k] || 0), 0);
+  const sum = (k) => filteredVideos.reduce((a, v) => a + (v[k] || 0), 0);
   const totals = [["YouTube", sum("yt_views")], ["Instagram", sum("ig_views")], ["Facebook", sum("fb_views")],
     ["Total", sum("yt_views") + sum("ig_views") + sum("fb_views")]];
 
   return (
     <div>
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:14}}>
+        <select className="input" style={{width:"auto"}} value={period} onChange={e=>setPeriod(e.target.value)} aria-label="Analytics date range">
+          {["Today","This week","This month","Last month","Custom days"].map(p=><option key={p}>{p}</option>)}
+        </select>
+        {period === "Custom days" && <><input className="input" style={{width:145}} type="date" value={customFrom} onChange={e=>setCustomFrom(e.target.value)} aria-label="Analytics from"/><input className="input" style={{width:145}} type="date" value={customTo} onChange={e=>setCustomTo(e.target.value)} aria-label="Analytics to"/></>}
+        <span className="sub" style={{margin:0}}>{filteredVideos.length} published content items</span>
+      </div>
       <div className="statrow">
         {totals.map(([k, v]) => (
           <div className="statbox" key={k} style={{ flex: 1, minWidth: 130 }}>
