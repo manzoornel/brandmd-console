@@ -11,11 +11,11 @@ const asDate = (value) => value ? new Date(value) : null;
 const hoursBetween = (start, end) => Math.max(0, (new Date(end) - new Date(start)) / 36e5);
 const fmtTime = value => value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
 const reportSessionEnd = (a, rangeEnd) => {
-  if (a.clock_out) return new Date(a.clock_out);
+  if (a.clock_out) return new Date(Math.min(new Date(a.clock_out).getTime(), new Date(rangeEnd).getTime()));
   const today = new Date().toLocaleDateString("en-CA");
-  if (a.work_date === today) return new Date(rangeEnd);
-  const shiftEnd = new Date(`${a.work_date}T17:00:00+05:30`);
-  return shiftEnd > new Date(a.clock_in) ? shiftEnd : new Date(new Date(a.clock_in).getTime() + 7.5 * 36e5);
+  if (a.work_date === today) return new Date(Math.min(Date.now(), new Date(rangeEnd).getTime()));
+  // An absent clock-out is not evidence of a full shift.
+  return new Date(a.clock_in);
 };
 
 export default function RealReportsView({ generatedAt, people, videos, attendance, attendanceEvents, activityEvents, logs, clients, compensationRules, sundayCredits }) {
@@ -25,26 +25,50 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
   const [role, setRole] = useState("All roles");
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("Overview");
+  const [workerId, setWorkerId] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [workKind, setWorkKind] = useState("All work");
 
   const { start, end } = useMemo(() => {
+    // Use the office timezone even when the report is opened abroad.
     const now = new Date(generatedAt);
-    const end = new Date(now);
-    let start = new Date(now);
-    if (period === "Today") start.setHours(0, 0, 0, 0);
-    else if (period === "This week") { start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - 6); }
-    else if (period === "This month") start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const officeNow = new Date(now.getTime() + 330 * 60000);
+    const year = officeNow.getUTCFullYear(), month = officeNow.getUTCMonth();
+    const boundary = (y,m,d) => new Date(Date.UTC(y,m,d) - 330 * 60000);
+    let end = boundary(year, month, officeNow.getUTCDate() + 1);
+    end = new Date(end.getTime() - 1);
+    let start = boundary(year, month, officeNow.getUTCDate());
+    if (period === "This week") start = boundary(year, month, officeNow.getUTCDate() - ((officeNow.getUTCDay()+6)%7));
+    else if (period === "This month") start = boundary(year, month, 1);
     else if (period === "Last month") {
-      start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      end.setTime(new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999).getTime());
+      start = boundary(year, month - 1, 1);
+      end = new Date(boundary(year, month, 1).getTime() - 1);
     } else if (period === "Custom days") {
-      start = customFrom ? new Date(`${customFrom}T00:00:00`) : new Date(now.getFullYear(), now.getMonth(), 1);
-      end.setTime(customTo ? new Date(`${customTo}T23:59:59.999`).getTime() : now.getTime());
+      start = customFrom ? new Date(`${customFrom}T00:00:00+05:30`) : boundary(year, month, 1);
+      if (customTo) end = new Date(`${customTo}T23:59:59.999+05:30`);
     }
     return { start, end };
   }, [period, generatedAt, customFrom, customTo]);
 
   const inRange = (value) => { const d = asDate(value); return d && d >= start && d <= end; };
   const staff = useMemo(() => people.filter(p => p.active !== false && !(p.roles || []).includes("client")), [people]);
+  const workDetails = useMemo(() => videos.flatMap(v => {
+    if (clientId && v.client_id !== clientId) return [];
+    const result = [];
+    const add = (userId, at, kind) => {
+      const person = people.find(p => p.id === userId);
+      if (!inRange(at) || (workerId && workerId !== userId) ||
+          (workKind !== "All work" && kind !== workKind) ||
+          (query && !(person?.full_name || "Unassigned").toLowerCase().includes(query.toLowerCase()))) return;
+      result.push({ ...v, user: person?.full_name || "Unassigned", at, kind,
+        doctor: clients.find(c => c.id === v.client_id)?.name || "Unassigned" });
+    };
+    if (["video", "poster", "shoot"].includes(v.item_type)) add(v.editor_id, v.submitted_at,
+      v.item_type === "video" ? "Video edit" : v.item_type === "poster" ? "Poster created" : "Shoot completed");
+    if (["video", "poster"].includes(v.item_type)) add(v.writer_id, v.posted_at,
+      v.item_type === "video" ? "Video posted" : "Poster posted");
+    return result;
+  }).sort((a,b) => new Date(b.at) - new Date(a.at)), [videos, people, clients, start, end, workerId, clientId, workKind, query]);
 
   const rows = useMemo(() => staff.map((p) => {
     const edited = videos.filter(v => v.editor_id === p.id && v.item_type === "video" && inRange(v.submitted_at)).length;
@@ -75,7 +99,9 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
     const images = items.filter(v => v.item_type === "poster").length;
     const posts = items.filter(v => v.item_type !== "shoot").length;
     const quota = (c.quota_videos || 0) + (c.quota_posters || 0);
-    return { name: c.name, video, units, billed, images, posts, delivered: video + images, quota, used: quota ? Math.round((video + images) / quota * 100) : 0 };
+    const reels = videoItems.filter(v => Number(v.duration_seconds) > 0 && Number(v.duration_seconds) <= 180).length;
+    const long = videoItems.filter(v => Number(v.duration_seconds) > 180).length;
+    return { id: c.id, name: c.name, video, reels, long, unknown: video - reels - long, units, billed, images, posts, delivered: video + images, quota, used: quota ? Math.round((video + images) / quota * 100) : 0 };
   }).filter(d => d.video || d.images || d.posts || d.quota), [clients, videos, start, end]);
 
   const payroll = useMemo(() => staff.map((p) => {
@@ -97,7 +123,7 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
     const creatives = videos.filter(v => v.editor_id === p.id && v.item_type === "poster" && inRange(v.submitted_at)).length;
     const approvedSunday = sundayCredits.filter(c => c.user_id === p.id && ["approved","paid"].includes(c.status) && inRange(c.duty_date));
     const breakdown = compensationBreakdown(rule, {
-      workingDays: workingDaysInMonth(start.getFullYear(), start.getMonth()),
+      workingDays: workingDaysInMonth(new Date(start.getTime()+330*60000).getUTCFullYear(), new Date(start.getTime()+330*60000).getUTCMonth()),
       unpaidDays: 0,
       posts: postingPackages,
       creatives,
@@ -136,6 +162,29 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
   const shownEvents = events.length ? events : legacyEvents;
 
   return <div className="body">
+    <section className={styles.panel} style={{marginBottom:16}}>
+      <Title title="Find work by person, doctor and date" sub="Use the period selector below. One content item shared to three platforms is one posting task, not three."/>
+      <div className={styles.filters}>
+        <select aria-label="Worker" value={workerId} onChange={e=>{setWorkerId(e.target.value);setTab("Work details");}}><option value="">All workers</option>{people.filter(p=>!(p.roles||[]).includes("client")).map(p=><option key={p.id} value={p.id}>{p.full_name}</option>)}</select>
+        <select aria-label="Doctor or clinic" value={clientId} onChange={e=>{setClientId(e.target.value);setTab("Work details");}}><option value="">All doctors / clinics</option>{clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>
+        <select aria-label="Work category" value={workKind} onChange={e=>{setWorkKind(e.target.value);setTab("Work details");}}>{["All work","Video edit","Video posted","Poster created","Poster posted","Shoot completed"].map(k=><option key={k}>{k}</option>)}</select>
+        <button onClick={()=>setTab("Work details")}>Work details</button><button onClick={()=>setTab("Doctor billing")}>Doctor video summary</button>
+      </div>
+      <p className="hint">Person, doctor and work-category selections apply to Work details. Doctor video summary uses the doctor and period selections. Other summaries use the existing search and role filters.</p>
+    </section>
+    {tab === "Work details" && <section className={styles.panel} style={{overflowX:"auto"}}>
+      <Title title={`${workDetails.length} completed tasks`} sub="Editing and publishing are separate duties. Dates are actual submission/publication dates, not item creation dates."/>
+      <p>{["Video edit","Video posted","Poster created","Poster posted","Shoot completed"].map(k=>`${k}: ${workDetails.filter(w=>w.kind===k).length}`).join(" · ")}</p>
+      <table><thead><tr><th>Completed (India time)</th><th>Staff</th><th>Doctor / clinic</th><th>Content</th><th>Work</th><th>Duration / type</th><th>YouTube</th><th>Instagram</th><th>Facebook</th></tr></thead><tbody>
+        {workDetails.map(w=><tr key={`${w.id}-${w.kind}`}><td>{new Date(w.at).toLocaleString("en-IN",{timeZone:"Asia/Kolkata"})}</td><td>{w.user}</td><td>{w.doctor}</td><td>{w.title}</td><td>{w.kind}</td><td>{w.item_type === "video" ? Number(w.duration_seconds)>0 ? `${Math.floor(w.duration_seconds/60)}:${String(w.duration_seconds%60).padStart(2,"0")} · ${w.duration_seconds<=180?"Reel":"Long video"}` : "Duration missing" : "—"}</td>{["youtube_url","instagram_url","facebook_url"].map(key=><td key={key}>{w.kind.endsWith("posted") ? /^https?:\/\//i.test(w[key]||"") ? <a href={w[key]} target="_blank" rel="noopener noreferrer">View post ↗</a> : <span style={{color:"#b45309"}}>Link missing</span> : "—"}</td>)}</tr>)}
+        {!workDetails.length&&<tr><td colSpan={9}>No completed work matches these filters.</td></tr>}
+      </tbody></table><p className="hint">A saved link is evidence recorded by staff, not independent verification by the social platform. YouTube poster links can point to a community post.</p>
+    </section>}
+    {tab === "Doctor billing" && <section className={styles.panel} style={{overflowX:"auto"}}>
+      <Title title="Doctor video delivery & value" sub="Published videos in the selected period. Reels: up to 3 minutes. Long videos: over 3 minutes."/>
+      <table><thead><tr><th>Doctor / clinic</th><th>Videos</th><th>Reels</th><th>Long videos</th><th>Duration missing</th><th>Client units</th><th>Video value after discount</th></tr></thead><tbody>{doctors.filter(d=>!clientId||d.id===clientId).map(d=><tr key={d.id}><td>{d.name}</td><td>{d.video}</td><td>{d.reels}</td><td>{d.long}</td><td>{d.unknown}</td><td>{d.units}</td><td>₹{d.billed.toLocaleString("en-IN")}</td></tr>)}</tbody></table>
+      <p className="hint">Each started 3-minute block is one client billing unit, subject to saved overrides. Legacy videos without duration retain their existing unit credit. This is delivered video value, not an outstanding invoice: advances, payments and non-video charges must be reconciled in Accounts before requesting payment.</p>
+    </section>}
     <div className={styles.heading}><div><p className={styles.eyebrow}>OPERATIONS INTELLIGENCE</p><h1>Team reports</h1><p>Live production, publishing and attendance data from BrandMD.</p></div><button className={styles.export} onClick={() => window.print()}>⇩ Print report</button></div>
     <div className={styles.tabs}>{["Overview","Live attendance","Workers","Doctors & quotas","Salary & incentives","Stage timing","Activity log"].map(t => <button key={t} onClick={() => setTab(t)} className={tab === t ? styles.tabActive : ""}>{t}</button>)}</div>
     <div className={styles.filters}><select value={period} onChange={e => setPeriod(e.target.value)}>{periods.map(p => <option key={p}>{p}</option>)}</select>{period === "Custom days" && <><input type="date" value={customFrom} onChange={e=>setCustomFrom(e.target.value)} title="Report from"/><input type="date" value={customTo} onChange={e=>setCustomTo(e.target.value)} title="Report to"/></>}<select value={role} onChange={e => setRole(e.target.value)}>{["All roles","Editor","Writer","Designer","Shooter","Admin"].map(r => <option key={r}>{r}</option>)}</select><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search worker…"/><span className={styles.updated}>● Live Supabase data</span></div>
