@@ -1,12 +1,13 @@
 "use client";
 
 import { useMemo, useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { STAGES, STAGE_INDEX, stageMeta, ITEM_TYPES } from "@/lib/stages";
 import { isAdmin, hasRole } from "@/lib/roles";
 import { fmt, dueInfo, shortDate } from "@/lib/format";
 import {
   addVideo, createShootingPlan, approveSchedule, editVideo, deleteVideo, submitDrive, approveVideo, rejectVideo,
-  savePost, markPosted, updateViews, startTask, refreshYouTubeViews,
+  savePost, markPosted, schedulePost, cancelScheduledPost, updateViews, startTask, refreshYouTubeViews,
 } from "@/app/actions";
 import { youTubeEmbed } from "@/lib/youtube";
 import { effectiveStaffVideoUnits, effectiveVideoUnits } from "@/lib/operations";
@@ -42,6 +43,12 @@ function DueBadge({ due, small }) {
 }
 
 export default function Board({ roles, myId, myClientId, videos, clients, people }) {
+  const router = useRouter();
+  useEffect(() => {
+    if (!videos.some(v=>v.stage === "scheduled")) return;
+    const timer = setInterval(()=>router.refresh(),30000);
+    return ()=>clearInterval(timer);
+  }, [videos, router]);
   const [filter, setFilter] = useState("all");
   const [workScope, setWorkScope] = useState(isAdmin(roles) ? "all" : "mine");
   const [publishedPeriod, setPublishedPeriod] = useState("This month");
@@ -54,7 +61,7 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
   const clientOf = (id) => clientById(id)?.name || "— No doctor —";
   const topKeyOf = (v) => { const c = clientById(v.client_id); return (c && c.parent_id) || v.client_id; };
   const subNameOf = (v) => { const c = clientById(v.client_id); return c && c.parent_id ? c.name : null; };
-  const dueVal = (v) => (v.due_date ? new Date(v.due_date).getTime() : Infinity);
+  const dueVal = (v) => (v.stage === "scheduled" ? new Date(v.scheduled_publish_at).getTime() : v.due_date ? new Date(v.due_date).getTime() : Infinity);
 
   const inSelectedPeriod = (value) => {
     if (!value) return false;
@@ -76,7 +83,7 @@ export default function Board({ roles, myId, myClientId, videos, clients, people
   const visibleForRole = (v) => {
     if (workScope === "all" && isAdmin(roles)) return true;
     if (hasRole(roles, "client")) return v.client_id === myClientId || topKeyOf(v) === myClientId;
-    return v.editor_id === myId || v.writer_id === myId || (v.stage === "content" && hasRole(roles, "writer"));
+    return v.editor_id === myId || v.writer_id === myId || (["content", "scheduled"].includes(v.stage) && hasRole(roles, "writer"));
   };
   const stageDate = (v) => v.stage === "published"
     ? v.posted_at
@@ -213,6 +220,8 @@ function Card({ v, roles, myId, myClientId, editorName, approverName, writerName
         <span className="tag" style={{ background: "#ECFDF3", color: "#027A48" }}>{effectiveVideoUnits(v)} client unit{effectiveVideoUnits(v) === 1 ? "" : "s"}</span>
         <span className="tag" style={{ background: "#FFF7ED", color: "#C2410C" }}>{effectiveStaffVideoUnits(v)} staff unit{effectiveStaffVideoUnits(v) === 1 ? "" : "s"}</span>
       </div>}
+      {v.scheduled_publish_at && <p className="hint" style={{color:"#0369A1",fontWeight:700}}>Scheduled: {new Date(v.scheduled_publish_at).toLocaleString("en-IN",{timeZone:"Asia/Kolkata",dateStyle:"medium",timeStyle:"short"})} IST{v.stage === "scheduled" && new Date(v.scheduled_publish_at)<=new Date() ? " · Awaiting automatic update" : ""}</p>}
+      {v.publication_source === "scheduled_time_unverified" && <p className="hint">Moved automatically at scheduled time · Social platform publication not independently verified</p>}
       {v.scheduled_post_date && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 7 }}>
         <span className="tag" style={{ background: "#EEF2FF", color: "#4338CA" }}>Publish due: {shortDate(v.scheduled_post_date)}</span>
         <span className="tag" style={{ background: v.schedule_status === "approved" ? "#ECFDF3" : "#FFF7ED", color: v.schedule_status === "approved" ? "#027A48" : "#C2410C" }}>{v.schedule_status === "approved" ? "Schedule approved" : "Awaiting schedule approval"}</span>
@@ -270,6 +279,7 @@ function cardAction(v, roles, myId, myClientId) {
     return { type: "submit", label: v.item_type === "poster" ? "Add file & submit" : v.item_type === "shoot" ? "Submit shoot" : "Add Drive link & submit" };
   if (v.stage === "review" && adminOrClient) return { type: "review", label: "Review" };
   if (v.stage === "content" && (hasRole(roles, "writer") || isAdmin(roles))) return { type: "post", label: "Write content & post" };
+  if (v.stage === "scheduled" && (isAdmin(roles) || (hasRole(roles,"writer") && v.writer_id === myId))) return { type:"post", label:"View / change schedule" };
   if (v.stage === "published" && isAdmin(roles)) return { type: "views", label: "Views" };
   if (v.stage === "published") return { type: "view", label: "Open" };
   return null;
@@ -344,7 +354,8 @@ function NewItem({ clients, people, close }) {
       try { await createShootingPlan(fd); close(); } catch (e) { setErr(e.message); setBusy(false); }
       return;
     }
-    if (!title.trim()) return;
+    if (!title.trim()) return setErr("Enter a title.");
+    if (type === "video" && (!Number.isFinite(Number(durationMinutes)) || Number(durationMinutes) <= 0)) return setErr("Video duration is required before saving.");
     setBusy(true); setErr("");
     const fd = new FormData();
     fd.set("title", title.trim()); fd.set("item_type", type);
@@ -384,7 +395,7 @@ function NewItem({ clients, people, close }) {
       </> : <>
       <label className="lbl">Title</label>
       <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. 3 foods that spike sugar" />
-      {type === "video" && <><label className="lbl">Finished video duration (minutes)</label><input className="input" type="number" min="0.1" step="0.1" value={durationMinutes} onChange={(e) => setDurationMinutes(e.target.value)} placeholder="e.g. 4.5" /><p className="hint">Client and staff units are calculated automatically. Admin can adjust them later.</p></>}
+      {type === "video" && <><label className="lbl">Finished video duration (minutes) <span style={{color:"#B42318"}}>* required</span></label><input className="input" style={!durationMinutes || Number(durationMinutes)<=0 ? {borderColor:"#DC2626",boxShadow:"0 0 0 2px #FEE2E2"}:undefined} aria-invalid={!durationMinutes || Number(durationMinutes)<=0} type="number" min="0.1" step="0.1" value={durationMinutes} onChange={(e) => setDurationMinutes(e.target.value)} placeholder="e.g. 4.5" />{(!durationMinutes || Number(durationMinutes)<=0) && <p className="hint" style={{color:"#B42318"}}>Duration is required. Add the finished duration to classify Reel or Long video.</p>}<p className="hint">Up to 3 minutes is a Reel; above 3 minutes is a Long video. Units are calculated automatically.</p></>}
       <label className="lbl">Brief — what needs to be done</label>
       <textarea className="textarea" value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Notes for the editor/designer…" />
       <label className="lbl">Doctor / client</label>
@@ -434,7 +445,8 @@ function EditItem({ v, clients, people, close }) {
   const [err, setErr] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   async function save() {
-    if (!f.title.trim()) return;
+    if (!f.title.trim()) return setErr("Enter a title.");
+    if (f.item_type === "video" && (!Number.isFinite(Number(f.duration_minutes)) || Number(f.duration_minutes) <= 0)) return setErr("Video duration is required before saving.");
     setBusy(true); setErr("");
     const fd = new FormData();
     fd.set("id", v.id);
@@ -462,7 +474,7 @@ function EditItem({ v, clients, people, close }) {
       </div>
       <label className="lbl">Title</label>
       <input className="input" value={f.title} onChange={set("title")} />
-      {f.item_type === "video" && <><label className="lbl">Finished video duration (minutes)</label><input className="input" type="number" min="0.1" step="0.1" value={f.duration_minutes} onChange={set("duration_minutes")} /><p className="hint">Client units: {videoUnitsFromMinutes(f.duration_minutes)} · Staff units: {staffUnitsFromMinutes(f.duration_minutes)}</p></>}
+      {f.item_type === "video" && <><label className="lbl">Finished video duration (minutes) <span style={{color:"#B42318"}}>* required</span></label><input className="input" style={!f.duration_minutes || Number(f.duration_minutes)<=0 ? {borderColor:"#DC2626",boxShadow:"0 0 0 2px #FEE2E2"}:undefined} aria-invalid={!f.duration_minutes || Number(f.duration_minutes)<=0} type="number" min="0.1" step="0.1" value={f.duration_minutes} onChange={set("duration_minutes")} />{(!f.duration_minutes || Number(f.duration_minutes)<=0) && <p className="hint" style={{color:"#B42318"}}>Duration is required. Complete this field before saving.</p>}<p className="hint">Client units: {videoUnitsFromMinutes(f.duration_minutes)} · Staff units: {staffUnitsFromMinutes(f.duration_minutes)}</p></>}
       <label className="lbl">Brief</label>
       <textarea className="textarea" value={f.brief} onChange={set("brief")} />
       <label className="lbl">Doctor / client</label>
@@ -556,6 +568,8 @@ function Review({ v, close }) {
 }
 
 function PostContent({ v, close }) {
+  const [publishAt, setPublishAt] = useState(v.scheduled_publish_at ? new Date(new Date(v.scheduled_publish_at).getTime()+330*60000).toISOString().slice(0,16) : "");
+  const [confirmed, setConfirmed] = useState(false);
   const [f, setF] = useState({
     caption: v.caption || "", hashtags: v.hashtags || "", pinned: v.pinned_comment || "",
     youtube: v.youtube_url || "", instagram: v.instagram_url || "", facebook: v.facebook_url || "",
@@ -571,9 +585,26 @@ function PostContent({ v, close }) {
     setErr(""); setBusy(true);
     try { await markPosted(v.id, f); close(); } catch (e) { setErr(e.message); setBusy(false); }
   }
+  async function schedule() {
+    setErr(""); setBusy(true);
+    try { await schedulePost(v.id, f, publishAt, confirmed); close(); }
+    catch(e) {setErr(e.message); setBusy(false);}
+  }
+  async function cancelSchedule() {
+    setErr(""); setBusy(true);
+    try { await cancelScheduledPost(v.id); close(); }
+    catch(e) {setErr(e.message); setBusy(false);}
+  }
   return (
     <div style={{ maxHeight: "78vh", overflowY: "auto" }}>
       <PanelHead v={v} label="Content & posting" />
+      <label className="lbl">Scheduled publication — India time (IST)</label>
+      <input className="input" type="datetime-local" value={publishAt} onChange={e=>setPublishAt(e.target.value)}/>
+      <p className="hint">First schedule the post on YouTube / Facebook / Instagram. BrandMD moves it to Published automatically within approximately one minute of this time, even when you are logged out. This does not upload or verify the social media post.</p>
+      <label style={{display:"flex",gap:8,marginBottom:12}}><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>I have set the matching date and time on the required social platforms.</label>
+      <button className="cta" disabled={busy || !confirmed || !publishAt} onClick={schedule}>{v.stage === "scheduled" ? "Update schedule" : "Move to Scheduled"}</button>
+      {v.stage === "scheduled" && <button className="btn" disabled={busy} onClick={cancelSchedule}>Return to Content & Posting</button>}
+      {v.stage === "scheduled" && <p className="hint">Changing or cancelling here does not change the social platform schedule. Update those platforms too.</p>}
       <TaskTimerPill />
       {v.drive_link && <a className="drivebox" href={v.drive_link} target="_blank" rel="noreferrer">▶ Approved file ↗</a>}
       <label className="lbl">Caption / content</label>
@@ -598,8 +629,8 @@ function PostContent({ v, close }) {
       <input className="input" value={f.facebook} onChange={set("facebook")} placeholder="https://facebook.com/…" />
       {err && <p className="hint" style={{ color: "#B42318", fontWeight: 600 }}>{err}</p>}
       <div className="mbtns">
-        <button className="btn btn-ghost" disabled={busy} onClick={draft}>Save draft</button>
-        <button className="cta" disabled={busy} onClick={post}>{v.item_type === "shoot" ? "Mark done ✓" : "Mark posted ✓"}</button>
+        <button className="btn btn-ghost" disabled={busy || v.stage === "scheduled"} onClick={draft}>Save draft</button>
+        <button className="cta" disabled={busy || v.stage === "scheduled"} onClick={post}>Already published — mark posted ✓</button>
       </div>
     </div>
   );

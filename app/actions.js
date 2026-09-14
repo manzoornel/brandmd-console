@@ -203,6 +203,7 @@ export async function addVideo(form) {
   if (!["super_admin", "admin", "editor", "designer", "shooter"].some((r) => has(profile.roles, r)))
     throw new Error("Not allowed");
   const durationSeconds = Number(form.get("duration_seconds"));
+  if ((form.get("item_type") || "video") === "video" && (!Number.isFinite(durationSeconds) || durationSeconds <= 0)) throw new Error("Video duration is required before saving.");
   const { data: created, error } = await supabase.from("videos").insert({
     title: form.get("title"),
     client_id: form.get("client_id") || null,
@@ -531,6 +532,7 @@ export async function editVideo(form) {
   const allowed = admin_(profile.roles) || (v && v.editor_id === profile.id);
   if (!allowed) throw new Error("Only the assigned person or an admin can edit this item.");
   const durationSeconds = Number(form.get("duration_seconds"));
+  if ((form.get("item_type") || "video") === "video" && (!Number.isFinite(durationSeconds) || durationSeconds <= 0)) throw new Error("Video duration is required before saving.");
   const nextEditor = form.get("editor_id") || null;
   const changedEditor = (v?.editor_id || null) !== nextEditor;
   const transferReason = String(form.get("reassignment_reason") || "").trim();

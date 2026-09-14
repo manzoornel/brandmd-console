@@ -1,0 +1,25 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+// Exercise the actual dependency-free calculations in the report component.
+const source = fs.readFileSync('components/RealReportsView.jsx', 'utf8');
+const rangeBody = source.split('const { start, end } = useMemo(() => {')[1].split('}, [period, generatedAt')[0];
+const range = new Function('period','generatedAt','customFrom','customTo', rangeBody);
+const september = range('This month','2026-09-10T10:00:00Z','','');
+assert.equal(september.start.toISOString(),'2026-08-31T18:30:00.000Z');
+const august = range('Last month','2026-09-10T10:00:00Z','','');
+assert.equal(august.end.toISOString(),'2026-08-31T18:29:59.999Z');
+const custom = range('Custom days','2026-09-10T10:00:00Z','2026-09-04','2026-09-04');
+assert.equal(custom.end-custom.start,86400000-1);
+const detailsExpression = source.split('const workDetails = useMemo(() => ')[1].split(', [videos, people, clients, start, end, workerId')[0];
+const details = new Function('videos','people','clients','inRange','workerId','clientId','workKind','query',`return ${detailsExpression}`);
+const inRange = value => value && new Date(value)>=september.start && new Date(value)<=september.end;
+const video = {id:'v1',title:'Diabetes',item_type:'video',editor_id:'m',writer_id:'s',client_id:'d',submitted_at:'2026-09-01',posted_at:'2026-09-02',youtube_url:'https://youtube.com/1',instagram_url:'https://instagram.com/1',facebook_url:'https://facebook.com/1'};
+const poster = {...video,id:'p1',item_type:'poster'};
+const people = [{id:'m',full_name:'Mufeed'},{id:'s',full_name:'Shamil'}];
+const run = (items,worker='',kind='All work')=>details(items,people,[{id:'d',name:'Doctor'}],inRange,worker,'',kind,'');
+assert.equal(run([video],'s').length,1,'Three platform links count as one publishing duty');
+assert.equal(run([video,poster],'s','Poster posted').length,1);
+assert.equal(run([video],'m','Video edit').length,1);
+assert.equal(run([{...video,submitted_at:'2026-08-18',posted_at:'2026-08-22'}]).length,0);
+assert.equal(run([{...video,submitted_at:'2026-08-18'}],'s').length,1,'Old creation/edit date does not suppress September publication');
+console.log('8 report date/count assertions passed');
