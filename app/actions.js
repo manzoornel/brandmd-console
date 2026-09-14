@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { fetchYouTubeViews } from "@/lib/youtube";
 import { effectiveVideoUnits } from "@/lib/operations";
+import { publicationTime } from "@/lib/publishing";
 
 async function me() {
   const supabase = createClient();
@@ -393,14 +394,54 @@ export async function savePost(videoId, fields) {
 
 export async function markPosted(videoId, fields) {
   const { supabase, user, profile } = await me();
+  if (!admin_(profile.roles) && !has(profile.roles,"writer")) throw new Error("Only posting staff or admins can publish.");
   const now = new Date().toISOString();
-  await supabase.from("videos").update({
+  const { data, error } = await supabase.from("videos").update({
     caption: fields.caption, hashtags: fields.hashtags, pinned_comment: fields.pinned,
     youtube_url: fields.youtube, instagram_url: fields.instagram, facebook_url: fields.facebook,
     writer_id: profile.id, stage: "published", posted_at: now, current_stage_entered_at: now, last_saved_at: now,
-  }).eq("id", videoId);
+  }).eq("id", videoId).eq("stage","content").neq("item_type","shoot").select("id").single();
+  if (error || !data) throw new Error("Could not publish. Refresh and check that the item is still in Content & Posting.");
   await logActivity(supabase, user.id, videoId, "stage_transition", { from_stage: "content", to_stage: "published" });
   await stopTask(videoId);
+  revalidatePath("/dashboard");
+}
+
+export async function schedulePost(videoId, fields, localTime, platformConfirmed) {
+  const { supabase, user, profile } = await me();
+  if (!admin_(profile.roles) && !has(profile.roles,"writer")) throw new Error("Only posting staff or admins can schedule.");
+  if (platformConfirmed !== true) throw new Error("Confirm that the post is scheduled on the social platforms first.");
+  const scheduledAt = publicationTime(localTime);
+  const {data:v,error:loadError} = await supabase.from("videos").select("stage,writer_id,item_type,scheduled_publish_at").eq("id",videoId).single();
+  if (loadError || !v || !["content","scheduled"].includes(v.stage) || v.item_type === "shoot") throw new Error("This item is not ready to schedule. Refresh and try again.");
+  if (v.stage === "scheduled" && !admin_(profile.roles) && v.writer_id !== profile.id) throw new Error("Only the assigned posting staff or admin can change this schedule.");
+  if (v.stage === "scheduled" && new Date(v.scheduled_publish_at).getTime() <= Date.now()) throw new Error("Publication is already due. Wait for the automatic update and refresh.");
+  const now = new Date().toISOString();
+  let update = supabase.from("videos").update({
+    caption: fields.caption, hashtags: fields.hashtags, pinned_comment: fields.pinned,
+    youtube_url: fields.youtube, instagram_url: fields.instagram, facebook_url: fields.facebook,
+    writer_id: v.stage === "scheduled" ? v.writer_id : profile.id, stage:"scheduled",
+    scheduled_publish_at:scheduledAt, posting_prepared_at:now, posted_at:null,
+    current_stage_entered_at:now, last_saved_at:now,
+  }).eq("id",videoId).eq("stage",v.stage);
+  if (v.stage === "scheduled") update = update.eq("scheduled_publish_at",v.scheduled_publish_at).gt("scheduled_publish_at",now);
+  const {data,error} = await update.select("id").single();
+  if (error || !data) throw new Error("Schedule could not be saved. Check deployment setup or refresh if another user changed this item.");
+  await logActivity(supabase,user.id,videoId,"stage_transition",{from_stage:v.stage,to_stage:"scheduled",scheduled_for:scheduledAt,platform_schedule_confirmed:true});
+  await stopTask(videoId);
+  revalidatePath("/dashboard"); revalidatePath("/reports");
+}
+
+export async function cancelScheduledPost(videoId) {
+  const {supabase,user,profile} = await me();
+  if (!admin_(profile.roles) && !has(profile.roles,"writer")) throw new Error("Not allowed.");
+  const now = new Date().toISOString();
+  let update = supabase.from("videos").update({stage:"content",scheduled_publish_at:null,current_stage_entered_at:now,last_saved_at:now})
+    .eq("id",videoId).eq("stage","scheduled").gt("scheduled_publish_at",now);
+  if (!admin_(profile.roles)) update = update.eq("writer_id",profile.id);
+  const {data,error} = await update.select("id").single();
+  if (error || !data) throw new Error("Could not cancel: the item may already be due or assigned to another person. Refresh to check.");
+  await logActivity(supabase,user.id,videoId,"stage_transition",{from_stage:"scheduled",to_stage:"content",schedule_cancelled:true});
   revalidatePath("/dashboard");
 }
 
