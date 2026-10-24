@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import styles from "./ReportsDemo.module.css";
 import { rolesLabel } from "@/lib/roles";
+import { workerOutput } from "@/lib/worker-output";
 import { clientVideoCharge, compensationBreakdown, effectiveStaffVideoUnits, effectiveVideoUnits, workingDaysInMonth } from "@/lib/operations";
 
 const periods = ["Today", "This week", "This month", "Last month", "Custom days"];
@@ -71,6 +72,7 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
   }).sort((a,b) => new Date(b.at) - new Date(a.at)), [videos, people, clients, start, end, workerId, clientId, workKind, query]);
 
   const rows = useMemo(() => staff.map((p) => {
+    const output = workerOutput(videos.filter(v => !clientId || v.client_id === clientId), p.id, inRange, generatedAt);
     const edited = videos.filter(v => v.editor_id === p.id && v.item_type === "video" && inRange(v.submitted_at)).length;
     const editItems = videos.filter(v => v.editor_id === p.id && v.item_type === "video" && inRange(v.submitted_at));
     const staffUnits = editItems.reduce((sum, v) => sum + effectiveStaffVideoUnits(v), 0);
@@ -90,8 +92,8 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
     const completed = videos.filter(v => (v.editor_id === p.id || v.writer_id === p.id) && inRange(v.posted_at));
     const turnaround = completed.length ? completed.reduce((sum, v) => sum + hoursBetween(v.created_at, v.posted_at) / 24, 0) / completed.length : 0;
     const rework = videos.filter(v => v.editor_id === p.id && v.rejection_note && (inRange(v.submitted_at) || inRange(v.posted_at))).length;
-    return { ...p, role: rolesLabel(p.roles || []), edited, staffUnits, shoots, images, postersCreated, postersEdited, scheduledPublished, yt, ig, fb, posts: published.length, hours, verifiedClockIns, activeSeconds, turnaround, rework };
-  }).filter(w => (role === "All roles" || w.role.includes(role)) && w.full_name.toLowerCase().includes(query.toLowerCase())), [staff, videos, attendance, attendanceEvents, logs, start, end, role, query]);
+    return { ...p, output, role: rolesLabel(p.roles || []), edited, staffUnits, shoots, images, postersCreated, postersEdited, scheduledPublished, yt, ig, fb, posts: published.length, hours, verifiedClockIns, activeSeconds, turnaround, rework };
+  }).filter(w => (!workerId || w.id === workerId) && (role === "All roles" || w.role.includes(role)) && w.full_name.toLowerCase().includes(query.toLowerCase())), [staff, videos, attendance, attendanceEvents, logs, start, end, role, query, workerId, clientId, generatedAt]);
 
   const doctors = useMemo(() => clients.map(c => {
     const items = videos.filter(v => v.client_id === c.id && inRange(v.posted_at));
@@ -120,10 +122,11 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
     } : null;
     const rule = saved || fallback;
     if (!rule) return null;
-    const monthVideos = videos.filter(v => v.editor_id === p.id && v.item_type === "video" && inRange(v.submitted_at));
+    const output = workerOutput(videos, p.id, inRange, generatedAt);
+    const monthVideos = output.video.published;
     const videoUnits = monthVideos.reduce((sum, v) => sum + effectiveStaffVideoUnits(v), 0);
-    const postingPackages = videos.filter(v => v.writer_id === p.id && inRange(v.posted_at)).length;
-    const creatives = videos.filter(v => v.editor_id === p.id && v.item_type === "poster" && inRange(v.submitted_at)).length;
+    const postingPackages = output.posting.length;
+    const creatives = output.poster.published.length;
     const approvedSunday = sundayCredits.filter(c => c.user_id === p.id && ["approved","paid"].includes(c.status) && inRange(c.duty_date));
     const breakdown = compensationBreakdown(rule, {
       workingDays: workingDaysInMonth(new Date(start.getTime()+330*60000).getUTCFullYear(), new Date(start.getTime()+330*60000).getUTCMonth()),
@@ -131,11 +134,11 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
       posts: postingPackages,
       creatives,
       videoUnits,
-      videoEdits: 0,
+      videoEdits: monthVideos.length,
       sundayCompensation: approvedSunday.filter(c => c.status === "paid").reduce((sum, c) => sum + Number(c.paid_amount || 0), 0),
     });
     return { ...p, rule, videoUnits, postingPackages, creatives, approvedSunday: approvedSunday.length, breakdown, saved: !!saved };
-  }).filter(Boolean), [staff, compensationRules, sundayCredits, videos, start, end]);
+  }).filter(Boolean), [staff, compensationRules, sundayCredits, videos, start, end, generatedAt]);
 
   const total = key => rows.reduce((sum, row) => sum + row[key], 0);
   const attendanceRows = useMemo(() => attendance.filter(a => inRange(a.clock_in)).map(a => {
@@ -165,6 +168,7 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
   const shownEvents = events.length ? events : legacyEvents;
 
   return <div className="body">
+    {tab === "Salary & incentives" && <p className="hint">Video and poster incentives are credited to their editor only after publication, using the publication month. Scheduled items earn no incentive yet. Posting credit belongs to the posting staff.</p>}
     <section className={styles.panel} style={{marginBottom:16}}>
       <Title title="Find work by person, doctor and date" sub="Use the period selector below. One content item shared to three platforms is one posting task, not three."/>
       <div className={styles.filters}>
@@ -192,7 +196,7 @@ export default function RealReportsView({ generatedAt, people, videos, attendanc
     <div className={styles.tabs}>{["Overview","Live attendance","Workers","Doctors & quotas","Salary & incentives","Stage timing","Activity log"].map(t => <button key={t} onClick={() => setTab(t)} className={tab === t ? styles.tabActive : ""}>{t}</button>)}</div>
     <div className={styles.filters}><select value={period} onChange={e => setPeriod(e.target.value)}>{periods.map(p => <option key={p}>{p}</option>)}</select>{period === "Custom days" && <><input type="date" value={customFrom} onChange={e=>setCustomFrom(e.target.value)} title="Report from"/><input type="date" value={customTo} onChange={e=>setCustomTo(e.target.value)} title="Report to"/></>}<select value={role} onChange={e => setRole(e.target.value)}>{["All roles","Editor","Writer","Designer","Shooter","Admin"].map(r => <option key={r}>{r}</option>)}</select><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search worker…"/><span className={styles.updated}>● Live Supabase data</span></div>
     {tab === "Overview" && <><section className={styles.kpis}><Kpi icon="▶" color="violet" value={total("edited")} label="Videos edited"/><Kpi icon="●" color="amber" value={total("shoots")} label="Shoots completed"/><Kpi icon="↗" color="green" value={total("posts")} label="Content posted"/><Kpi icon="◇" color="coral" value={total("images")} label="Posters / images"/></section><section className={styles.grid2}><div className={styles.panel}><Title title="Output by worker" sub="Each content item is counted once, even when shared to several platforms"/>{rows.map(w => <Bar key={w.id} w={w} max={Math.max(1,...rows.map(x=>x.edited+x.shoots+x.images+x.posts))}/>)}</div><div className={styles.panel}><Title title="Platform link coverage" sub="Platform links are shown separately and do not multiply staff work"/><Donut yt={total("yt")} ig={total("ig")} fb={total("fb")}/><div className={styles.legend}><span><i className={styles.yt}/>YouTube <b>{total("yt")}</b></span><span><i className={styles.ig}/>Instagram <b>{total("ig")}</b></span><span><i className={styles.fb}/>Facebook <b>{total("fb")}</b></span></div></div></section>{top && <section className={styles.insight}><span>★</span><div><b>{top.full_name} leads output for this period</b><p>Based on edits, completed shoots, content items and creatives.</p></div><button onClick={()=>setTab("Workers")}>View worker report →</button></section>}</>}
-    {tab === "Workers" && <div className={styles.panel}><Title title="Worker performance" sub="Monthly output, publication and incentive-ready counts"/><table><thead><tr><th>Worker</th><th>Role</th><th>Videos edited</th><th>Staff units</th><th>Posters created</th><th>Posters edited</th><th>Shoots</th><th>Published</th><th>Scheduled → published</th><th>Verified days</th><th>Hours</th><th>Rework*</th></tr></thead><tbody>{rows.map(w=><tr key={w.id}><td><b>{w.full_name}</b></td><td>{w.role}</td><td>{w.edited}</td><td><b>{w.staffUnits.toFixed(1)}</b></td><td>{w.postersCreated}</td><td>{w.postersEdited}</td><td>{w.shoots}</td><td><b>{w.posts}</b></td><td>{w.scheduledPublished}</td><td>{w.verifiedClockIns}</td><td>{w.hours.toFixed(1)}h</td><td>{w.rework}</td></tr>)}</tbody></table><p className="hint">Published is counted once per content item, even when the same item has YouTube, Instagram and Facebook links. These counts feed the Salary & incentives tab and are based on the actual completion/publication timestamps.</p></div>}
+    {tab === "Workers" && <div className={styles.panel} style={{overflowX:"auto"}}><Title title="Editor production & publication" sub="Editing credit belongs to the editor, even when another staff member schedules or posts the item."/><table><thead><tr><th>Worker</th><th>Type</th><th>Edited in period</th><th>Of these: scheduled</th><th>Of these: published in period</th><th>All published in period</th></tr></thead><tbody>{rows.flatMap(w=>["video","poster"].map(type=><tr key={w.id+type}><td><b>{w.full_name}</b></td><td>{type === "video" ? "Videos" : "Posters"}</td><td>{w.output[type].edited}</td><td>{w.output[type].scheduled}</td><td>{w.output[type].publishedFromEdits}</td><td><b>{w.output[type].published.length}</b></td></tr>))}</tbody></table><p className="hint">Scheduled shows items edited in the selected period that are still scheduled, including future publication dates. All published includes work edited in earlier months and published during this period. Incentives use this publication-period total.</p><Title title="Posting work" sub="Credit for preparing and publishing content, counted once per item across platforms."/><table><thead><tr><th>Worker</th><th>Videos posted</th><th>Posters posted</th></tr></thead><tbody>{rows.map(w=><tr key={w.id}><td>{w.full_name}</td><td>{w.output.posting.filter(v=>v.item_type==="video").length}</td><td>{w.output.posting.filter(v=>v.item_type==="poster").length}</td></tr>)}</tbody></table></div>}
     {tab === "Live attendance" && <div className={styles.panel}><Title title="Login & worked-time live view" sub="Every login session recorded during the selected period"/><table><thead><tr><th>Staff</th><th>Date</th><th>Login</th><th>Logout</th><th>Device</th><th>Location</th><th>Worked</th><th>Status</th></tr></thead><tbody>{attendanceRows.map((a,i)=><tr key={`${a.user_id}-${a.clock_in}-${i}`}><td><b>{a.name}</b><br/><small>{a.role}</small></td><td>{new Date(a.clock_in).toLocaleDateString()}</td><td>{fmtTime(a.clock_in)}</td><td>{a.live ? "—" : fmtTime(a.clock_out)}</td><td><b>{a.device_type || "Legacy login"}</b><br/><small>{a.device_label || "Not recorded"}</small></td><td>{a.location_status || "Legacy login"}{Number.isFinite(Number(a.distance_m)) && <><br/><small>{Math.round(Number(a.distance_m))} m from saved office point</small></>}</td><td><b>{a.worked.toFixed(1)} h</b></td><td>{a.live ? <b style={{color:"#059669"}}>● Live now</b> : "Completed"}</td></tr>)}{!attendanceRows.length&&<tr><td colSpan="8">No attendance sessions in this period.</td></tr>}</tbody></table></div>}
     {tab === "Doctors & quotas" && <div className={styles.panel}><Title title="Doctor delivery, units & billing" sub="Published production compared with current package quotas; discounts are client-specific"/><table><thead><tr><th>Doctor/client</th><th>Videos</th><th>Billable units</th><th>Video value</th><th>Posters</th><th>Platform posts</th><th>Quota</th><th>Used</th></tr></thead><tbody>{doctors.map(d=><tr key={d.name}><td><b>{d.name}</b></td><td>{d.video}</td><td><b>{d.units}</b></td><td>₹{d.billed.toLocaleString("en-IN")}</td><td>{d.images}</td><td>{d.posts}</td><td>{d.quota || "—"}</td><td><div className={styles.quota}><span style={{width:`${Math.min(d.used,100)}%`}}/></div><b>{d.quota ? `${d.used}%` : "—"}</b></td></tr>)}</tbody></table></div>}
     {tab === "Salary & incentives" && <div className={styles.panel}><Title title="Salary & incentive preview" sub="Live output-based calculation. Attendance deduction stays at ₹0 until attendance records are verified and approved."/><table><thead><tr><th>Staff</th><th>Base salary</th><th>Video units</th><th>Posting packages</th><th>Creatives</th><th>Incentives</th><th>Deductions</th><th>Estimated payable</th><th>Status</th></tr></thead><tbody>{payroll.map(p=><tr key={p.id}><td><b>{p.full_name}</b><br/><small>{p.saved ? "Saved rule" : "BrandMD approved default"}</small></td><td>₹{p.breakdown.base.toLocaleString("en-IN")}</td><td>{p.videoUnits.toFixed(1)}</td><td>{p.postingPackages}</td><td>{p.creatives}</td><td><b style={{color:"#15803d"}}>+₹{p.breakdown.incentives.toLocaleString("en-IN")}</b></td><td><b style={{color:"#b91c1c"}}>−₹{p.breakdown.deductions.toLocaleString("en-IN")}</b></td><td><b>₹{Math.round(p.breakdown.payable).toLocaleString("en-IN")}</b></td><td>{p.breakdown.warnings.length ? p.breakdown.warnings.join(" · ") : "On target"}{p.approvedSunday ? ` · ${p.approvedSunday} Sunday credit` : ""}</td></tr>)}</tbody></table><p className="hint">Legacy videos without a saved duration count as 1 staff unit. New videos use the approved duration-based unit rule. Final payroll requires admin approval.</p></div>}

@@ -1,0 +1,18 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const source = fs.readFileSync("lib/worker-output.js", "utf8").replace("export function", "function");
+const output = new Function(source + "; return workerOutput;")();
+const inRange = d => d && d >= "2026-10-01" && d < "2026-11-01";
+const items = Array.from({length:40},(_,i)=>({id:i,item_type:"video",editor_id:"m",writer_id:"s",submitted_at:"2026-10-05",stage:i<30?"published":"scheduled",posted_at:i<30?"2026-10-10":null,scheduled_publish_at:"2026-11-02"}));
+const m = output(items,"m",inRange,"2026-10-24");
+assert.equal(m.video.edited,40);
+assert.equal(m.video.scheduled,10);
+assert.equal(m.video.published.length,30);
+assert.equal(m.posting.length,0);
+assert.equal(output(items,"s",inRange,"2026-10-24").posting.length,30);
+const prior = {...items[0],submitted_at:"2026-09-01"};
+assert.equal(output([prior],"m",inRange,"2026-10-24").video.edited,0);
+assert.equal(output([prior],"m",inRange,"2026-10-24").video.published.length,1);
+assert.equal(output([{...items[0],posted_at:"2026-10-30"}],"m",inRange,"2026-10-24").video.published.length,0);
+assert.equal(output([{...items[0],item_type:"poster",editor_id:"s"}],"s",inRange,"2026-10-24").poster.published.length,1);
+console.log("Worker credit: 9 assertions passed");
