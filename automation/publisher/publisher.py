@@ -303,6 +303,22 @@ def graph() -> str:
     return f"https://graph.facebook.com/{env('META_GRAPH_VERSION', 'v23.0')}"
 
 
+_PAGE_TOKEN: str | None = None
+
+
+def page_token() -> str:
+    """META_PAGE_TOKEN may be a Page token or a system-user token; resolve to the Page token once."""
+    global _PAGE_TOKEN
+    if _PAGE_TOKEN is None:
+        tok = env("META_PAGE_TOKEN")
+        try:
+            got = meta_call("GET", f"{graph()}/{env('META_PAGE_ID')}", params={"fields": "access_token", "access_token": tok})
+            _PAGE_TOKEN = got.get("access_token") or tok
+        except RuntimeError:
+            _PAGE_TOKEN = tok
+    return _PAGE_TOKEN
+
+
 def meta_call(method: str, url: str, **kw) -> dict:
     import requests
     res = requests.request(method, url, timeout=kw.pop("timeout", 120), **kw)
@@ -324,7 +340,7 @@ def upload_bytes(url: str, token: str, path: Path) -> dict:
 
 
 def publish_facebook(v: dict, path: Path, secs: int | None) -> tuple[str, str]:
-    token, page = env("META_PAGE_TOKEN"), env("META_PAGE_ID")
+    token, page = page_token(), env("META_PAGE_ID")
     text = full_caption(v)
     if secs is None or secs <= 90:  # Reels API accepts 3-90 s
         try:
@@ -361,7 +377,7 @@ def wait_fb(vid: str, token: str) -> str:
 
 
 def publish_instagram(v: dict, path: Path) -> tuple[str, str]:
-    token, ig = env("META_PAGE_TOKEN"), env("META_IG_USER_ID")
+    token, ig = page_token(), env("META_IG_USER_ID")
     box = meta_call("POST", f"{graph()}/{ig}/media", data={
         "media_type": "REELS", "upload_type": "resumable", "caption": full_caption(v)[:2200],
         "share_to_feed": "true", "access_token": token})
@@ -383,7 +399,7 @@ def publish_instagram(v: dict, path: Path) -> tuple[str, str]:
 def comment_meta(object_id: str, text: str) -> None:
     if text:
         try:
-            meta_call("POST", f"{graph()}/{object_id}/comments", data={"message": text, "access_token": env("META_PAGE_TOKEN")})
+            meta_call("POST", f"{graph()}/{object_id}/comments", data={"message": text, "access_token": page_token()})
         except RuntimeError as e:
             print(f"  first comment failed on {object_id}: {e}", file=sys.stderr)
 
@@ -555,7 +571,7 @@ def check() -> list[str]:
         report.append(f"❌ Supabase: {e}")
     try:
         p = meta_call("GET", f"{graph()}/{env('META_PAGE_ID')}", params={
-            "fields": "name,instagram_business_account{username}", "access_token": env("META_PAGE_TOKEN")})
+            "fields": "name,instagram_business_account{username}", "access_token": page_token()})
         ig = (p.get("instagram_business_account") or {})
         ok = ig.get("id") == env("META_IG_USER_ID")
         report.append(f"✅ Facebook Page: {p.get('name')}")
