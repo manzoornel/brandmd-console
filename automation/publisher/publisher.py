@@ -571,6 +571,55 @@ def publish(db: DB, clients: dict, dry: bool) -> list[dict]:
     return results
 
 
+def browser_queue(db: DB, clients: dict, days: int) -> list[dict]:
+    """Scheduled items Hermes still has to upload through the browser (FB+IG via Business Suite, YouTube Studio)."""
+    if not clients:
+        return []
+    until = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=days)).isoformat()
+    rows = db.get("videos", {"select": VIDEO_FIELDS, "stage": "eq.scheduled", "publication_source": "eq.auto_pending",
+                             "scheduled_publish_at": f"lte.{until}", "client_id": in_list(clients),
+                             "order": "scheduled_publish_at.asc"})
+    out = []
+    for v in rows:
+        try:
+            path = download_video(v)
+        except Exception as e:
+            out.append({"id": v["id"], "title": v["title"], "error": redact(str(e))[:300]})
+            continue
+        slot = dt.datetime.fromisoformat(v["scheduled_publish_at"].replace("Z", "+00:00")).astimezone(IST)
+        out.append({
+            "id": v["id"], "title": v["title"], "video_file": str(path),
+            "schedule_date": slot.strftime("%d/%m/%Y"), "schedule_time": slot.strftime("%I:%M %p"),
+            "schedule_iso_ist": slot.isoformat(), "in_past": slot <= dt.datetime.now(IST),
+            "facebook_instagram_text": full_caption(v), "first_comment": v.get("pinned_comment", ""),
+            "youtube_title": (v.get("yt_title") or v["title"])[:100],
+            "youtube_description": v.get("yt_description") or full_caption(v),
+            "done": {"facebook_instagram": bool(v.get("fb_video_id")), "youtube": bool(v.get("yt_video_id"))},
+        })
+    return out
+
+
+def mark_browser(db: DB, vid: str, platform: str, link: str) -> dict:
+    """Record one platform done; when both are done the item leaves the queue (pg_cron marks it Published at the slot)."""
+    rows = db.get("videos", {"select": "id,fb_video_id,yt_video_id,stage", "id": f"eq.{vid}"})
+    if not rows:
+        raise SystemExit("No such video id")
+    v = rows[0]
+    upd = {"last_saved_at": dt.datetime.now(dt.timezone.utc).isoformat(), "publish_error": ""}
+    if platform == "meta":
+        upd.update({"fb_video_id": "browser", "facebook_url": link or ""})
+        v["fb_video_id"] = "browser"
+    elif platform == "youtube":
+        upd.update({"yt_video_id": "browser", "youtube_url": link or ""})
+        v["yt_video_id"] = "browser"
+    elif platform == "error":
+        upd = {"publish_error": f"Hermes: {link}"[:300]}
+    if v["fb_video_id"] and v["yt_video_id"]:
+        upd["publication_source"] = "browser_scheduled"
+    db.patch("videos", {"id": f"eq.{vid}"}, upd)
+    return {"id": vid, "updated": list(upd)}
+
+
 def status(db: DB, clients: dict) -> list[dict]:
     if not clients:
         return []
@@ -624,8 +673,13 @@ def main() -> None:
             pass
     load_env()
     ap = argparse.ArgumentParser(description="Brand MD auto-publisher")
-    ap.add_argument("command", choices=["run", "prepare", "publish", "status", "check", "google-login"])
+    ap.add_argument("command", choices=["run", "prepare", "publish", "status", "check", "google-login",
+                                        "browser-queue", "mark"])
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--days", type=int, default=3, help="browser-queue: look this many days ahead")
+    ap.add_argument("--id", help="mark: video id")
+    ap.add_argument("--platform", choices=["meta", "youtube", "error"], help="mark: which upload finished")
+    ap.add_argument("--link", default="", help="mark: post link, or the error text for --platform error")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     if a.command == "google-login":
@@ -643,7 +697,12 @@ def main() -> None:
         result["queue"] = status(db, clients)
     if a.command in ("run", "prepare"):
         result["prepared"] = prepare(db, clients, a.dry_run)
-    if a.command in ("run", "publish"):
+    if a.command == "browser-queue":
+        result["to_upload"] = browser_queue(db, clients, a.days)
+    if a.command == "mark":
+        result["marked"] = mark_browser(db, a.id, a.platform, a.link)
+    # PUBLISH_MODE=api uploads through the platform APIs; the default "browser" leaves uploading to Hermes.
+    if a.command == "publish" or (a.command == "run" and env("PUBLISH_MODE", "browser") == "api"):
         result["published"] = publish(db, clients, a.dry_run)
     text = json.dumps(result, ensure_ascii=False, indent=2)
     with open(HERE / "publisher.log", "a", encoding="utf-8") as fh:

@@ -80,3 +80,23 @@ class Flow(unittest.TestCase):
         self.assertIn("needs a human", out[0]["error"]); self.assertEqual(self.calls, [])
 
 if __name__ == "__main__": unittest.main()
+
+
+class BrowserMode(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(__file__).parent / "fake.mp4"; self.tmp.write_bytes(b"0" * 200_000)
+        p.download_video = lambda v: self.tmp
+    def tearDown(self): self.tmp.unlink(missing_ok=True)
+
+    def test_queue_and_mark(self):
+        soon = (p.dt.datetime.now(p.dt.timezone.utc) + p.dt.timedelta(hours=3)).isoformat()
+        db = FakeDB([video(stage="scheduled", publication_source="auto_pending", scheduled_publish_at=soon,
+                           caption="cap", hashtags="#DoctorUncle", yt_title="T")])
+        q = p.browser_queue(db, CLIENTS, 3)
+        self.assertEqual(len(q), 1)
+        self.assertEqual(q[0]["facebook_instagram_text"], "cap\n\n#DoctorUncle")
+        p.mark_browser(db, "v1", "meta", "https://fb/x")
+        self.assertEqual(db.rows[0]["publication_source"], "auto_pending")  # YouTube still pending
+        p.mark_browser(db, "v1", "youtube", "https://youtu.be/x")
+        self.assertEqual(db.rows[0]["publication_source"], "browser_scheduled")
+        self.assertEqual(p.browser_queue(db, CLIENTS, 3), [])  # leaves the queue
