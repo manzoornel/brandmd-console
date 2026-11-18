@@ -106,6 +106,14 @@ def clean_caption_json(raw: str) -> dict:
     return out
 
 
+def redact(msg: str) -> str:
+    msg = re.sub(r"(key|access_token|token)=[^&\s'\"]+", r"\1=***", msg)
+    for name in ("GEMINI_API_KEY", "LLM_API_KEY", "META_PAGE_TOKEN", "SUPABASE_SERVICE_ROLE_KEY"):
+        if env(name):
+            msg = msg.replace(env(name), "***")
+    return msg
+
+
 def ist_date(iso: str | None) -> dt.date | None:
     if not iso:
         return None
@@ -255,38 +263,47 @@ def write_caption(v: dict, client: dict, path: Path | None) -> dict:
         facts += f"Duration: {secs} seconds\n"
 
     if env("GEMINI_API_KEY") and path is not None:  # watches and listens to the actual video
-        key, model = env("GEMINI_API_KEY"), env("GEMINI_MODEL", "gemini-2.5-flash")
+        key = env("GEMINI_API_KEY")
+        hk = {"x-goog-api-key": key}  # header, so the key never appears in URLs or error logs
         base = "https://generativelanguage.googleapis.com"
         size = path.stat().st_size
-        start = requests.post(f"{base}/upload/v1beta/files?key={key}", timeout=60, headers={
+        start = requests.post(f"{base}/upload/v1beta/files", timeout=60, headers={**hk,
             "X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start",
             "X-Goog-Upload-Header-Content-Length": str(size), "X-Goog-Upload-Header-Content-Type": "video/mp4",
             "Content-Type": "application/json"}, data=json.dumps({"file": {"display_name": v["id"]}}))
         start.raise_for_status()
         with open(path, "rb") as fh:
-            up = requests.post(start.headers["X-Goog-Upload-URL"], timeout=900, data=fh, headers={
+            up = requests.post(start.headers["X-Goog-Upload-URL"], timeout=1800, data=fh, headers={
                 "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize"})
         up.raise_for_status()
         f = up.json()["file"]
-        for _ in range(60):
+        for _ in range(120):
             if f.get("state") == "ACTIVE":
                 break
             if f.get("state") == "FAILED":
                 raise RuntimeError("Gemini could not process the video")
             time.sleep(5)
-            f = requests.get(f"{base}/v1beta/{f['name']}?key={key}", timeout=30).json()
+            f = requests.get(f"{base}/v1beta/{f['name']}", headers=hk, timeout=30).json()
+        models = [m for m in dict.fromkeys([env("GEMINI_MODEL"), "gemini-3.5-flash", "gemini-3.7-flash", "gemini-2.5-flash"]) if m]
+        last = ""
         try:
-            res = requests.post(f"{base}/v1beta/models/{model}:generateContent?key={key}", timeout=300,
-                                headers={"Content-Type": "application/json"}, data=json.dumps({
-                    "systemInstruction": {"parts": [{"text": style}]},
-                    "contents": [{"parts": [{"file_data": {"mime_type": "video/mp4", "file_uri": f["uri"]}},
-                                            {"text": facts + "Watch and listen to the video, then write the JSON."}]}],
-                    "generationConfig": {"responseMimeType": "application/json", "temperature": 0.6}}))
-            res.raise_for_status()
-            text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+            for model in models:
+                res = requests.post(f"{base}/v1beta/models/{model}:generateContent", timeout=300,
+                                    headers={**hk, "Content-Type": "application/json"}, data=json.dumps({
+                        "systemInstruction": {"parts": [{"text": style}]},
+                        "contents": [{"parts": [{"file_data": {"mime_type": "video/mp4", "file_uri": f["uri"]}},
+                                                {"text": facts + "Watch and listen to the video, then write the JSON."}]}],
+                        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.6}}))
+                if res.status_code in (404, 400) and "model" in res.text.lower():
+                    last = f"{model}: {res.status_code}"
+                    continue
+                if res.status_code >= 400:
+                    raise RuntimeError(f"Gemini {model} error {res.status_code}: {res.text[:200]}")
+                text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+                return clean_caption_json(text)
+            raise RuntimeError(f"No Gemini model available ({last}); set GEMINI_MODEL in .env")
         finally:
-            requests.delete(f"{base}/v1beta/{f['name']}?key={key}", timeout=30)
-        return clean_caption_json(text)
+            requests.delete(f"{base}/v1beta/{f['name']}", headers=hk, timeout=30)
 
     # Text-only fallback: any OpenAI-compatible API (DeepSeek, OpenAI, OmniRoute...)
     base = env("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
@@ -485,7 +502,7 @@ def prepare(db: DB, clients: dict, dry: bool) -> list[dict]:
             results.append({"id": v["id"], "title": v["title"], "scheduled_ist": slot.astimezone(IST).strftime("%d %b %Y %I:%M %p"),
                             "yt_title": text["yt_title"], "caption": text["caption"]})
         except Exception as e:
-            msg = str(e)[:300]
+            msg = redact(str(e))[:300]
             results.append({"id": v["id"], "title": v["title"], "error": msg})
             if not dry:
                 db.patch("videos", {"id": f"eq.{v['id']}"}, {"publish_error": f"Caption step: {msg}"})
@@ -547,7 +564,7 @@ def publish(db: DB, clients: dict, dry: bool) -> list[dict]:
             out.update({"published": platforms, "facebook": v["facebook_url"], "instagram": v["instagram_url"],
                         "youtube": v["youtube_url"] or "(manual — YouTube auto-upload not enabled yet)"})
         except Exception as e:
-            msg = str(e)[:300]
+            msg = redact(str(e))[:300]
             db.patch("videos", {"id": f"eq.{v['id']}"}, {"publish_error": msg, "publish_locked_until": None})
             out["error"] = msg
         results.append(out)
