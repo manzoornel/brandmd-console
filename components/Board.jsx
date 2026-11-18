@@ -222,6 +222,9 @@ function Card({ v, roles, myId, myClientId, editorName, approverName, writerName
       </div>}
       {v.scheduled_publish_at && <p className="hint" style={{color:"#0369A1",fontWeight:700}}>Scheduled: {new Date(v.scheduled_publish_at).toLocaleString("en-IN",{timeZone:"Asia/Kolkata",dateStyle:"medium",timeStyle:"short"})} IST{v.stage === "scheduled" && new Date(v.scheduled_publish_at)<=new Date() ? " · Awaiting automatic update" : ""}</p>}
       {v.publication_source === "scheduled_time_unverified" && <p className="hint">Moved automatically at scheduled time · Social platform publication not independently verified</p>}
+      {v.publication_source === "auto_pending" && <p className="hint" style={{color:"#5B47FB",fontWeight:700}}>🤖 Hermes will post this automatically{v.stage === "content" ? " · On hold — schedule it again to resume" : " · Edit text before the scheduled time"}</p>}
+      {v.publication_source === "auto_api" && <p className="hint">🤖 Posted by Hermes · links verified from the platforms</p>}
+      {v.publish_error && v.stage !== "published" && <p className="hint" style={{color:"#B42318",fontWeight:700}}>⚠ Auto-post problem: {v.publish_error}</p>}
       {v.scheduled_post_date && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 7 }}>
         <span className="tag" style={{ background: "#EEF2FF", color: "#4338CA" }}>Publish due: {shortDate(v.scheduled_post_date)}</span>
         <span className="tag" style={{ background: v.schedule_status === "approved" ? "#ECFDF3" : "#FFF7ED", color: v.schedule_status === "approved" ? "#027A48" : "#C2410C" }}>{v.schedule_status === "approved" ? "Schedule approved" : "Awaiting schedule approval"}</span>
@@ -569,10 +572,12 @@ function Review({ v, close }) {
 
 function PostContent({ v, close }) {
   const [publishAt, setPublishAt] = useState(v.scheduled_publish_at ? new Date(new Date(v.scheduled_publish_at).getTime()+330*60000).toISOString().slice(0,16) : "");
-  const [confirmed, setConfirmed] = useState(false);
+  const auto = v.publication_source === "auto_pending";
+  const [confirmed, setConfirmed] = useState(auto);
   const [f, setF] = useState({
     caption: v.caption || "", hashtags: v.hashtags || "", pinned: v.pinned_comment || "",
     youtube: v.youtube_url || "", instagram: v.instagram_url || "", facebook: v.facebook_url || "",
+    ytTitle: v.yt_title || "",
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -600,13 +605,16 @@ function PostContent({ v, close }) {
       <PanelHead v={v} label="Content & posting" />
       <label className="lbl">Scheduled publication — India time (IST)</label>
       <input className="input" type="datetime-local" value={publishAt} onChange={e=>setPublishAt(e.target.value)}/>
+      {auto ? <p className="hint" style={{color:"#5B47FB",fontWeight:600}}>🤖 Auto-publish: Hermes wrote this text and will upload to Facebook, Instagram and YouTube at this time. Edit anything below, then press "Update schedule". "Return to Content & Posting" puts it on hold.</p> : <>
       <p className="hint">First schedule the post on YouTube / Facebook / Instagram. BrandMD moves it to Published automatically within approximately one minute of this time, even when you are logged out. This does not upload or verify the social media post.</p>
-      <label style={{display:"flex",gap:8,marginBottom:12}}><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>I have set the matching date and time on the required social platforms.</label>
+      <label style={{display:"flex",gap:8,marginBottom:12}}><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>I have set the matching date and time on the required social platforms.</label></>}
       <button className="cta" disabled={busy || !confirmed || !publishAt} onClick={schedule}>{v.stage === "scheduled" ? "Update schedule" : "Move to Scheduled"}</button>
       {v.stage === "scheduled" && <button className="btn" disabled={busy} onClick={cancelSchedule}>Return to Content & Posting</button>}
-      {v.stage === "scheduled" && <p className="hint">Changing or cancelling here does not change the social platform schedule. Update those platforms too.</p>}
+      {v.stage === "scheduled" && !auto && <p className="hint">Changing or cancelling here does not change the social platform schedule. Update those platforms too.</p>}
       <TaskTimerPill />
       {v.drive_link && <a className="drivebox" href={v.drive_link} target="_blank" rel="noreferrer">▶ Approved file ↗</a>}
+      {auto && <><label className="lbl">YouTube title</label>
+      <input className="input" value={f.ytTitle} onChange={set("ytTitle")} maxLength={100} /></>}
       <label className="lbl">Caption / content</label>
       <textarea className="textarea" value={f.caption} onChange={set("caption")} placeholder="Write the post caption…" />
       <label className="lbl">Hashtags</label>

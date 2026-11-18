@@ -1,0 +1,10 @@
+.env
+.venv/
+google_token.json
+google_client_secret.json
+downloads/
+*.part
+publisher.log
+last_run.txt
+__pycache__/
+tests/fake.mp4

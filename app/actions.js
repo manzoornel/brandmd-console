@@ -411,9 +411,10 @@ export async function markPosted(videoId, fields) {
 export async function schedulePost(videoId, fields, localTime, platformConfirmed) {
   const { supabase, user, profile } = await me();
   if (!admin_(profile.roles) && !has(profile.roles,"writer")) throw new Error("Only posting staff or admins can schedule.");
-  if (platformConfirmed !== true) throw new Error("Confirm that the post is scheduled on the social platforms first.");
   const scheduledAt = publicationTime(localTime);
-  const {data:v,error:loadError} = await supabase.from("videos").select("stage,writer_id,item_type,scheduled_publish_at").eq("id",videoId).single();
+  const {data:v,error:loadError} = await supabase.from("videos").select("stage,writer_id,item_type,scheduled_publish_at,publication_source").eq("id",videoId).single();
+  const auto = v?.publication_source === "auto_pending";
+  if (!auto && platformConfirmed !== true) throw new Error("Confirm that the post is scheduled on the social platforms first.");
   if (loadError || !v || !["content","scheduled"].includes(v.stage) || v.item_type === "shoot") throw new Error("This item is not ready to schedule. Refresh and try again.");
   if (v.stage === "scheduled" && !admin_(profile.roles) && v.writer_id !== profile.id) throw new Error("Only the assigned posting staff or admin can change this schedule.");
   if (v.stage === "scheduled" && new Date(v.scheduled_publish_at).getTime() <= Date.now()) throw new Error("Publication is already due. Wait for the automatic update and refresh.");
@@ -421,6 +422,7 @@ export async function schedulePost(videoId, fields, localTime, platformConfirmed
   let update = supabase.from("videos").update({
     caption: fields.caption, hashtags: fields.hashtags, pinned_comment: fields.pinned,
     youtube_url: fields.youtube, instagram_url: fields.instagram, facebook_url: fields.facebook,
+    ...(auto ? { yt_title: (fields.ytTitle || "").slice(0,100), publish_error: "" } : {}),
     writer_id: v.stage === "scheduled" ? v.writer_id : profile.id, stage:"scheduled",
     scheduled_publish_at:scheduledAt, posting_prepared_at:now, posted_at:null,
     current_stage_entered_at:now, last_saved_at:now,
@@ -428,7 +430,7 @@ export async function schedulePost(videoId, fields, localTime, platformConfirmed
   if (v.stage === "scheduled") update = update.eq("scheduled_publish_at",v.scheduled_publish_at).gt("scheduled_publish_at",now);
   const {data,error} = await update.select("id").single();
   if (error || !data) throw new Error("Schedule could not be saved. Check deployment setup or refresh if another user changed this item.");
-  await logActivity(supabase,user.id,videoId,"stage_transition",{from_stage:v.stage,to_stage:"scheduled",scheduled_for:scheduledAt,platform_schedule_confirmed:true});
+  await logActivity(supabase,user.id,videoId,"stage_transition",{from_stage:v.stage,to_stage:"scheduled",scheduled_for:scheduledAt,platform_schedule_confirmed:!auto,auto_publish:auto});
   await stopTask(videoId);
   revalidatePath("/dashboard"); revalidatePath("/reports");
 }
