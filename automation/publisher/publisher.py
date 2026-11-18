@@ -319,6 +319,15 @@ def page_token() -> str:
     return _PAGE_TOKEN
 
 
+def ig_user_id() -> str:
+    """META_IG_USER_ID, or the Instagram account linked to the Page when left blank."""
+    if not env("META_IG_USER_ID"):
+        got = meta_call("GET", f"{graph()}/{env('META_PAGE_ID')}", params={
+            "fields": "instagram_business_account", "access_token": page_token()})
+        os.environ["META_IG_USER_ID"] = (got.get("instagram_business_account") or {}).get("id", "")
+    return env("META_IG_USER_ID")
+
+
 def meta_call(method: str, url: str, **kw) -> dict:
     import requests
     res = requests.request(method, url, timeout=kw.pop("timeout", 120), **kw)
@@ -377,7 +386,7 @@ def wait_fb(vid: str, token: str) -> str:
 
 
 def publish_instagram(v: dict, path: Path) -> tuple[str, str]:
-    token, ig = page_token(), env("META_IG_USER_ID")
+    token, ig = page_token(), ig_user_id()
     box = meta_call("POST", f"{graph()}/{ig}/media", data={
         "media_type": "REELS", "upload_type": "resumable", "caption": full_caption(v)[:2200],
         "share_to_feed": "true", "access_token": token})
@@ -559,7 +568,7 @@ def status(db: DB, clients: dict) -> list[dict]:
 def check() -> list[str]:
     import requests
     report = []
-    need = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "META_PAGE_ID", "META_IG_USER_ID", "META_PAGE_TOKEN"]
+    need = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "META_PAGE_ID", "META_PAGE_TOKEN"]
     missing = [k for k in need if not env(k)]
     report.append("❌ Missing in .env: " + ", ".join(missing) if missing else "✅ .env has the required keys")
     if not (env("GEMINI_API_KEY") or env("LLM_API_KEY")):
@@ -573,7 +582,7 @@ def check() -> list[str]:
         p = meta_call("GET", f"{graph()}/{env('META_PAGE_ID')}", params={
             "fields": "name,instagram_business_account{username}", "access_token": page_token()})
         ig = (p.get("instagram_business_account") or {})
-        ok = ig.get("id") == env("META_IG_USER_ID")
+        ok = bool(ig.get("id")) and ig.get("id") == ig_user_id()
         report.append(f"✅ Facebook Page: {p.get('name')}")
         report.append(f"{'✅' if ok else '❌'} Instagram linked: @{ig.get('username','?')} (id {ig.get('id')})"
                       + ("" if ok else " — META_IG_USER_ID does not match"))
