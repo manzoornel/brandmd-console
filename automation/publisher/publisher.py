@@ -194,14 +194,30 @@ def google_login() -> None:
     print("Google sign-in saved. Drive download and YouTube upload are ready.")
 
 
+def media_ext(v: dict) -> str:
+    if v.get("item_type") != "poster":
+        return ".mp4"
+    m = re.search(r"\.(png|jpe?g|webp)(\?|$)", v.get("drive_link", ""), re.I)
+    return "." + (m.group(1).lower() if m else "png")
+
+
 def download_video(v: dict) -> Path:
     import requests
     folder = Path(env("WORK_DIR") or (HERE / "downloads"))
     folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / f"{v['id']}.mp4"
-    if dest.exists() and dest.stat().st_size > 100_000:
+    poster = v.get("item_type") == "poster"
+    dest = folder / f"{v['id']}{media_ext(v)}"
+    if dest.exists() and dest.stat().st_size > (5_000 if poster else 100_000):
         return dest
-    fid = drive_file_id(v.get("drive_link", ""))
+    link = v.get("drive_link", "") or ""
+    if link.startswith("http") and "google.com" not in link:  # direct file URL (e.g. poster in Supabase storage)
+        with requests.get(link, stream=True, timeout=120) as res:
+            res.raise_for_status()
+            with open(dest, "wb") as fh:
+                for chunk in res.iter_content(1 << 20):
+                    fh.write(chunk)
+        return dest
+    fid = drive_file_id(link)
     creds = google_creds()
     tmp = dest.with_suffix(".part")
     if creds:
@@ -219,9 +235,9 @@ def download_video(v: dict) -> Path:
         with open(tmp, "wb") as fh:
             for chunk in res.iter_content(1 << 20):
                 fh.write(chunk)
-    if tmp.stat().st_size < 100_000:
+    if tmp.stat().st_size < (5_000 if poster else 100_000):
         tmp.unlink(missing_ok=True)
-        raise RuntimeError("Downloaded file is too small to be a video — check the Drive link")
+        raise RuntimeError("Downloaded file is too small — check the Drive link")
     tmp.replace(dest)
     return dest
 
@@ -254,10 +270,25 @@ Rules:
 Return ONLY JSON with keys: caption, hashtags, pinned_comment, yt_title, yt_description."""
 
 
+POSTER_STYLE = """You write the Facebook/Instagram caption for a "Doctor Uncle" (Doctor Uncle Family Clinic, Vakkad & Unniyal, Tirur) poster.
+Follow the clinic's existing house format exactly:
+caption = first line: a short Malayalam hook (question or wish) then " | Doctor Uncle Family Clinic |#tirur", then a blank line, then
+"DOCTOR UNCLE\nTHE COMPLETE FAMILY CLINIC\nVAKKAD, Near Aneesha Theatre, Kootayi road, Tirur, India, 676502 \n+91 9961 588 880, 04942  087 888".
+For festival / greeting posters the hook is a warm Malayalam wish (e.g. "എല്ലാവർക്കും Doctor Uncleന്റെ ഹൃദയം നിറഞ്ഞ ഓണാശംസകൾ").
+Only say what the poster says; no cure promises, no doses.
+hashtags: 6-8 tags, always #DoctorUncle #Tirur, plus topic / festival tags (e.g. #HappyOnam) and #HealthTipsMalayalam for health posters.
+pinned_comment: one friendly line, WhatsApp 9961588880 for appointments (empty for pure greeting posters).
+yt_title and yt_description: empty strings.
+Return ONLY JSON with keys: caption, hashtags, pinned_comment, yt_title, yt_description."""
+
+
 def write_caption(v: dict, client: dict, path: Path | None) -> dict:
     import requests
-    style = STYLE + ("\nExtra style notes for this client:\n" + client["caption_style"] if client.get("caption_style") else "")
-    facts = f"Video title (internal): {v.get('title','')}\nBrief / topic notes: {v.get('brief','') or '-'}\n"
+    poster = v.get("item_type") == "poster"
+    style = (POSTER_STYLE if poster else STYLE) + ("\nExtra style notes for this client:\n" + client["caption_style"] if client.get("caption_style") else "")
+    facts = f"{'Poster' if poster else 'Video'} title (internal): {v.get('title','')}\nBrief / topic notes: {v.get('brief','') or '-'}\n"
+    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(
+        path.suffix.lower() if path else "", "video/mp4")
     secs = v.get("duration_seconds")
     if secs:
         facts += f"Duration: {secs} seconds\n"
@@ -269,7 +300,7 @@ def write_caption(v: dict, client: dict, path: Path | None) -> dict:
         size = path.stat().st_size
         start = requests.post(f"{base}/upload/v1beta/files", timeout=60, headers={**hk,
             "X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start",
-            "X-Goog-Upload-Header-Content-Length": str(size), "X-Goog-Upload-Header-Content-Type": "video/mp4",
+            "X-Goog-Upload-Header-Content-Length": str(size), "X-Goog-Upload-Header-Content-Type": mime,
             "Content-Type": "application/json"}, data=json.dumps({"file": {"display_name": v["id"]}}))
         start.raise_for_status()
         with open(path, "rb") as fh:
@@ -291,8 +322,8 @@ def write_caption(v: dict, client: dict, path: Path | None) -> dict:
                 res = requests.post(f"{base}/v1beta/models/{model}:generateContent", timeout=300,
                                     headers={**hk, "Content-Type": "application/json"}, data=json.dumps({
                         "systemInstruction": {"parts": [{"text": style}]},
-                        "contents": [{"parts": [{"file_data": {"mime_type": "video/mp4", "file_uri": f["uri"]}},
-                                                {"text": facts + "Watch and listen to the video, then write the JSON."}]}],
+                        "contents": [{"parts": [{"file_data": {"mime_type": mime, "file_uri": f["uri"]}},
+                                                {"text": facts + ("Look at the poster, then write the JSON." if poster else "Watch and listen to the video, then write the JSON.")}]}],
                         "generationConfig": {"responseMimeType": "application/json", "temperature": 0.6}}))
                 if res.status_code in (404, 400) and "model" in res.text.lower():
                     last = f"{model}: {res.status_code}"
@@ -475,7 +506,7 @@ def in_list(ids) -> str:
 def prepare(db: DB, clients: dict, dry: bool) -> list[dict]:
     if not clients:
         return []
-    todo = db.get("videos", {"select": VIDEO_FIELDS, "stage": "eq.content", "item_type": "eq.video",
+    todo = db.get("videos", {"select": VIDEO_FIELDS, "stage": "eq.content", "item_type": "in.(video,poster)",
                              "ai_prepared_at": "is.null", "client_id": in_list(clients), "order": "approved_at.asc"})
     results = []
     for v in todo:
@@ -484,10 +515,11 @@ def prepare(db: DB, clients: dict, dry: bool) -> list[dict]:
             path = download_video(v) if env("GEMINI_API_KEY") or not dry else None
             text = write_caption(v, c, path)
             busy = db.get("videos", {"select": "scheduled_publish_at,posted_at,stage", "client_id": f"eq.{v['client_id']}",
-                                     "stage": "in.(scheduled,published)"})
+                                     "stage": "in.(scheduled,published)", "item_type": f"eq.{v.get('item_type') or 'video'}"})
             taken = {ist_date(b["scheduled_publish_at"] if b["stage"] == "scheduled" else b["posted_at"]) for b in busy}
             pref = dt.date.fromisoformat(v["scheduled_post_date"]) if v.get("scheduled_post_date") else None
-            slot = next_slot(dt.datetime.now(dt.timezone.utc), str(c.get("auto_publish_time") or "19:00")[:5],
+            slot_time = env("POSTER_TIME", "18:00") if v.get("item_type") == "poster" else str(c.get("auto_publish_time") or "19:00")[:5]
+            slot = next_slot(dt.datetime.now(dt.timezone.utc), slot_time,
                              taken, int(env("EDIT_WINDOW_MINUTES", "120")), pref)
             now = dt.datetime.now(dt.timezone.utc).isoformat()
             row = dict(text)
@@ -588,20 +620,21 @@ def browser_queue(db: DB, clients: dict, days: int) -> list[dict]:
             continue
         slot = dt.datetime.fromisoformat(v["scheduled_publish_at"].replace("Z", "+00:00")).astimezone(IST)
         out.append({
-            "id": v["id"], "title": v["title"], "video_file": str(path),
+            "id": v["id"], "title": v["title"], "type": v.get("item_type") or "video", "video_file": str(path),
             "schedule_date": slot.strftime("%d/%m/%Y"), "schedule_time": slot.strftime("%I:%M %p"),
             "schedule_iso_ist": slot.isoformat(), "in_past": slot <= dt.datetime.now(IST),
             "facebook_instagram_text": full_caption(v), "first_comment": v.get("pinned_comment", ""),
             "youtube_title": (v.get("yt_title") or v["title"])[:100],
             "youtube_description": v.get("yt_description") or full_caption(v),
-            "done": {"facebook_instagram": bool(v.get("fb_video_id")), "youtube": bool(v.get("yt_video_id"))},
+            "done": {"facebook_instagram": bool(v.get("fb_video_id")),
+                     "youtube": bool(v.get("yt_video_id")) or v.get("item_type") == "poster"},
         })
     return out
 
 
 def mark_browser(db: DB, vid: str, platform: str, link: str) -> dict:
     """Record one platform done; when both are done the item leaves the queue (pg_cron marks it Published at the slot)."""
-    rows = db.get("videos", {"select": "id,fb_video_id,yt_video_id,stage", "id": f"eq.{vid}"})
+    rows = db.get("videos", {"select": "id,fb_video_id,yt_video_id,stage,item_type", "id": f"eq.{vid}"})
     if not rows:
         raise SystemExit("No such video id")
     v = rows[0]
@@ -614,7 +647,7 @@ def mark_browser(db: DB, vid: str, platform: str, link: str) -> dict:
         v["yt_video_id"] = "browser"
     elif platform == "error":
         upd = {"publish_error": f"Hermes: {link}"[:300]}
-    if v["fb_video_id"] and v["yt_video_id"]:
+    if v["fb_video_id"] and (v["yt_video_id"] or v.get("item_type") == "poster"):
         upd["publication_source"] = "browser_scheduled"
     db.patch("videos", {"id": f"eq.{vid}"}, upd)
     return {"id": vid, "updated": list(upd)}
@@ -674,7 +707,13 @@ def main() -> None:
     load_env()
     ap = argparse.ArgumentParser(description="Brand MD auto-publisher")
     ap.add_argument("command", choices=["run", "prepare", "publish", "status", "check", "google-login",
-                                        "browser-queue", "mark"])
+                                        "browser-queue", "mark", "poster-render", "poster-submit"])
+    ap.add_argument("--spec", help="poster-render: JSON file with headline, subline, points, theme, background, doctor")
+    ap.add_argument("--out", help="poster-render: output PNG path")
+    ap.add_argument("--file", help="poster-submit: PNG/JPG to submit for approval")
+    ap.add_argument("--title", default="", help="poster-submit: console title")
+    ap.add_argument("--brief", default="", help="poster-submit: what the poster is about (used for the caption)")
+    ap.add_argument("--date", help="poster-submit: must-post date YYYY-MM-DD (festival day); otherwise next free day")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--days", type=int, default=3, help="browser-queue: look this many days ahead")
     ap.add_argument("--id", help="mark: video id")
@@ -686,6 +725,11 @@ def main() -> None:
         return google_login()
     if a.command == "check":
         print("\n".join(check()))
+        return
+    if a.command == "poster-render":
+        import posters
+        spec = json.loads(Path(a.spec).read_text(encoding="utf-8"))
+        print(json.dumps({"rendered": str(posters.render(spec, Path(a.out)))}, ensure_ascii=False))
         return
     db = DB()
     try:
@@ -699,6 +743,9 @@ def main() -> None:
         result["prepared"] = prepare(db, clients, a.dry_run)
     if a.command == "browser-queue":
         result["to_upload"] = browser_queue(db, clients, a.days)
+    if a.command == "poster-submit":
+        import posters
+        result["submitted"] = posters.submit(db, clients, Path(a.file), a.title, a.brief, a.date)
     if a.command == "mark":
         result["marked"] = mark_browser(db, a.id, a.platform, a.link)
     # PUBLISH_MODE=api uploads through the platform APIs; the default "browser" leaves uploading to Hermes.

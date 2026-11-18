@@ -23,6 +23,16 @@ Folder on this PC: `C:\Users\User\Documents\BrandMD-Publisher` (run commands fro
 2. For every item, oldest first, do **A** (if `done.facebook_instagram` is false) and **B** (if `done.youtube` is false).
    If `in_past` is true, post it now instead of scheduling and say so in the report.
 
+**Posters** (`type` = `poster`, made by the doctoruncle-posters skill) go to Facebook + Instagram only — use **A-poster**
+below instead of A, and skip B (YouTube). `video_file` is then the PNG.
+
+### A-poster. Poster — Meta Business Suite post
+1. Open `https://business.facebook.com/latest/composer?asset_id=555118008306562&business_id=914354423117314`
+   ("Create post"). Post to: both *Doctor UNCLE* and *doctor_uncle_*.
+2. **Add photo** → set the file input to `video_file`. Paste `facebook_instagram_text` in the text box.
+3. Scheduling options → **Schedule** → `schedule_date` / `schedule_time` → **Schedule**. Confirm it in Planner.
+4. `.venv\Scripts\python.exe publisher.py mark --id <id> --platform meta --link "<link or planner>"`
+
 ### A. Facebook + Instagram together — Meta Business Suite
 1. Open `https://business.facebook.com/latest/reels_composer?asset_id=555118008306562&business_id=914354423117314`
 2. **Post to** must show *Doctor UNCLE and doctor_uncle_* (both). If not, open the dropdown and tick both.

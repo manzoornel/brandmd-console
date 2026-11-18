@@ -100,3 +100,25 @@ class BrowserMode(unittest.TestCase):
         p.mark_browser(db, "v1", "youtube", "https://youtu.be/x")
         self.assertEqual(db.rows[0]["publication_source"], "browser_scheduled")
         self.assertEqual(p.browser_queue(db, CLIENTS, 3), [])  # leaves the queue
+
+
+class PosterFlow(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(__file__).parent / "fake.png"; self.tmp.write_bytes(b"0" * 20_000)
+        p.download_video = lambda v: self.tmp
+        p.write_caption = lambda v, c, path: {"caption": "wish", "hashtags": "#DoctorUncle", "pinned_comment": "",
+                                               "yt_title": "", "yt_description": ""}
+    def tearDown(self): self.tmp.unlink(missing_ok=True)
+
+    def test_poster_gets_6pm_on_festival_day_and_needs_only_meta(self):
+        fest = (p.dt.date.today() + p.dt.timedelta(days=10)).isoformat()
+        db = FakeDB([video(id="p1", item_type="poster", scheduled_post_date=fest,
+                           drive_link="https://x.supabase.co/storage/v1/object/public/posters/a.png")])
+        p.prepare(db, CLIENTS, dry=False)
+        r = db.rows[0]
+        slot = p.dt.datetime.fromisoformat(r["scheduled_publish_at"]).astimezone(p.IST)
+        self.assertEqual((slot.date().isoformat(), slot.hour), (fest, 18))
+        q = p.browser_queue(db, CLIENTS, 30)
+        self.assertTrue(q[0]["done"]["youtube"])
+        p.mark_browser(db, "p1", "meta", "")
+        self.assertEqual(r["publication_source"], "browser_scheduled")
