@@ -123,7 +123,9 @@ class DB:
         self.r = requests
         self.url = env("SUPABASE_URL").rstrip("/") + "/rest/v1"
         key = env("SUPABASE_SERVICE_ROLE_KEY")
-        self.h = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        self.h = {"apikey": key, "Content-Type": "application/json"}
+        if not key.startswith("sb_"):  # legacy JWT service_role key; new sb_secret_ keys go in apikey only
+            self.h["Authorization"] = f"Bearer {key}"
 
     def get(self, table: str, params: dict) -> list[dict]:
         res = self.r.get(f"{self.url}/{table}", headers=self.h, params=params, timeout=30)
@@ -598,6 +600,11 @@ def check() -> list[str]:
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):  # Windows consoles default to cp1252
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     load_env()
     ap = argparse.ArgumentParser(description="Brand MD auto-publisher")
     ap.add_argument("command", choices=["run", "prepare", "publish", "status", "check", "google-login"])
@@ -610,7 +617,10 @@ def main() -> None:
         print("\n".join(check()))
         return
     db = DB()
-    clients = auto_clients(db)
+    try:
+        clients = auto_clients(db)
+    except Exception as e:
+        sys.exit(f"Supabase not reachable: {e}\nCheck SUPABASE_SERVICE_ROLE_KEY in .env (use the service_role / secret key, not anon).")
     result = {"at_ist": dt.datetime.now(IST).strftime("%d %b %Y %I:%M %p")}
     if a.command == "status":
         result["queue"] = status(db, clients)
